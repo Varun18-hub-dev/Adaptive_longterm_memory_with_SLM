@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Command-line interface to execute the Adaptive Memory Management pipeline (Phases 1 & 2).
+Command-line interface to execute the Adaptive Memory Management pipeline (Phases 1, 2, & 3).
 
 Usage:
-    python run_pipeline.py [--phase {1,2}] [--input INPUT_JSON] [--output OUTPUT_JSON] [--budget BUDGET]
+    python run_pipeline.py [--phase {1,2,3}] [--query "Where do I work now?"] [--model-path PATH]
 """
 
 import argparse
@@ -21,6 +21,14 @@ from memory_core import (
 from memory_lifecycle import (
     AdaptiveMemoryManager,
     run_phase2_pipeline,
+)
+from memory_retrieval import (
+    run_phase3_pipeline,
+)
+from model_adapter import (
+    BaseLLMAdapter,
+    FakeLLMAdapter,
+    LlamaCppAdapter,
 )
 
 
@@ -88,14 +96,31 @@ DEFAULT_SAMPLE_CONVERSATION_S2 = [
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run Adaptive Long-Term Memory Pipeline (Phase 1 & Phase 2)"
+        description="Run Adaptive Long-Term Memory Pipeline (Phases 1, 2, & 3)"
     )
     parser.add_argument(
         "--phase",
         type=int,
-        choices=[1, 2],
-        default=2,
-        help="Pipeline phase to execute: 1 (basic allocation) or 2 (lifecycle management & auditability). Default: 2.",
+        choices=[1, 2, 3],
+        default=3,
+        help="Pipeline phase: 1 (basic allocation), 2 (lifecycle management), 3 (retrieval + LLM generation). Default: 3.",
+    )
+    parser.add_argument(
+        "--query",
+        type=str,
+        default="Where do I work now?",
+        help="User query to test retrieval and response generation in Phase 3.",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=os.environ.get("QWEN_MODEL_PATH"),
+        help="Path to local Qwen GGUF model file. If omitted, uses QWEN_MODEL_PATH env or falls back to FakeLLMAdapter.",
+    )
+    parser.add_argument(
+        "--use-fake-llm",
+        action="store_true",
+        help="Force using the FakeLLMAdapter (useful for fast smoke-testing without model loading).",
     )
     parser.add_argument(
         "--input",
@@ -112,8 +137,14 @@ def parse_args():
     parser.add_argument(
         "--budget",
         type=int,
-        default=120,
-        help="Total token budget for memory allocation (default: 120).",
+        default=150,
+        help="Total storage budget (tokens) for persistent memory stores (default: 150).",
+    )
+    parser.add_argument(
+        "--max-context-tokens",
+        type=int,
+        default=256,
+        help="Separate prompt-context budget (tokens) for assembled LLM prompt (default: 256).",
     )
     parser.add_argument(
         "--min-episodic",
@@ -168,8 +199,9 @@ def main():
     )
 
     print(f"[*] Executing Phase {args.phase} Pipeline")
-    print(f"[*] Total Token Budget: {args.budget}")
-    print(f"[*] Scoring Weights: {scoring_weights}")
+    print(f"[*] Persistent Storage Budget: {args.budget} tokens")
+    print(f"[*] Prompt-Context Budget:     {args.max_context_tokens} tokens")
+    print(f"[*] Scoring Weights:           {scoring_weights}")
 
     if args.phase == 1:
         if args.input and os.path.exists(args.input):
@@ -202,8 +234,7 @@ def main():
         print(f"Persistence output: {os.path.abspath(output_path)}")
         print("=" * 55 + "\n")
 
-    else:
-        # Phase 2
+    elif args.phase == 2:
         manager = AdaptiveMemoryManager(
             total_budget=args.budget,
             scoring_weights=scoring_weights,
@@ -221,35 +252,77 @@ def main():
                 manager.process_session(sessions_data, session_id=args.session_id)
         else:
             print("[*] Running multi-session evolution demonstration (Session 1 & Session 2)...")
-            res_s1 = manager.process_session(
+            manager.process_session(
                 DEFAULT_SAMPLE_CONVERSATION_S1, session_id="session_01", current_timestamp=1700000350.0
             )
-            res_s2 = manager.process_session(
+            manager.process_session(
                 DEFAULT_SAMPLE_CONVERSATION_S2, session_id="session_02", current_timestamp=1700086450.0
             )
 
         print("\n" + "=" * 55)
         print("           PHASE 2 LIFECYCLE EXECUTION SUMMARY")
         print("=" * 55)
-        print(f"Total Budget Limit: {manager.total_budget} tokens")
+        print(f"Storage Budget Limit:       {manager.total_budget} tokens")
         total_used_tokens = sum(m.token_cost for m in manager.episodic_store + manager.semantic_store)
         print(f"Active Stores Total Tokens: {total_used_tokens} tokens")
         print(f"Active Episodic Items:      {len(manager.episodic_store)}")
         print(f"Active Semantic Items:      {len(manager.semantic_store)}")
         print(f"Archived (Superseded/Exp):  {len(manager.archive_store)}")
         print(f"Total Audit Log Entries:    {len(manager.audit_log)}")
+        print(f"Persisted State:            {os.path.abspath(output_path)}")
+        print("=" * 55 + "\n")
 
-        print("\n--- Active Semantic Knowledge ---")
-        for m in manager.semantic_store:
-            preds = m.metadata.get("historical_predecessors", [])
-            pred_note = f" (Superseded {len(preds)} older item)" if preds else ""
-            print(f"  [{m.lifecycle_status.value.upper()}] {m.content}{pred_note} (U={m.utility_score:.3f}, cost={m.token_cost})")
+    else:
+        # Phase 3
+        # Select adapter
+        if args.use_fake_llm or not args.model_path:
+            if not args.model_path and not args.use_fake_llm:
+                print("[!] No --model-path or QWEN_MODEL_PATH provided. Falling back to FakeLLMAdapter.")
+            else:
+                print("[*] Using FakeLLMAdapter (mock inference).")
+            llm_adapter: BaseLLMAdapter = FakeLLMAdapter()
+        else:
+            print(f"[*] Initializing local Qwen GGUF model via llama-cpp-python: {args.model_path}")
+            llm_adapter = LlamaCppAdapter(model_path=args.model_path, n_ctx=2048, verbose=False)
 
-        print("\n--- Archived / Superseded Items ---")
-        for m in manager.archive_store:
-            print(f"  [{m.lifecycle_status.value.upper()}] {m.content} (Superseded by: {m.metadata.get('superseded_by_id', 'N/A')})")
+        manager = AdaptiveMemoryManager(
+            total_budget=args.budget,
+            scoring_weights=scoring_weights,
+            allocation_config=allocation_config,
+            persistence_path=output_path,
+        )
 
-        print(f"\nPersisted State: {os.path.abspath(output_path)}")
+        print("[*] Intake multi-session conversations...")
+        manager.process_session(
+            DEFAULT_SAMPLE_CONVERSATION_S1, session_id="session_01", current_timestamp=1700000350.0
+        )
+        manager.process_session(
+            DEFAULT_SAMPLE_CONVERSATION_S2, session_id="session_02", current_timestamp=1700086450.0
+        )
+
+        print(f"[*] Processing user query: '{args.query}'")
+        res = run_phase3_pipeline(
+            conversation_history=[],
+            user_query=args.query,
+            llm_adapter=llm_adapter,
+            storage_budget=args.budget,
+            max_context_tokens=args.max_context_tokens,
+            existing_manager=manager,
+            current_timestamp=1700086500.0
+        )
+
+        print("\n" + "=" * 55)
+        print("           PHASE 3 RETRIEVAL & GENERATION SUMMARY")
+        print("=" * 55)
+        print(f"User Query:               {res['user_query']}")
+        print(f"Historical Query Detected: {res['is_historical_query']}")
+        print(f"Retrieved Memories:       {res['retrieved_count']}")
+        print(f"Context Tokens Used:      {res['context_result']['context_token_cost']} / {res['context_result']['max_context_tokens']}")
+        print(f"Storage Tokens Used:      {res['storage_status']['active_episodic_tokens'] + res['storage_status']['active_semantic_tokens']} / {res['storage_status']['total_storage_budget']}")
+        print("\n--- Assembled Memory Context ---")
+        print(res["context_result"]["formatted_context"])
+        print("\n--- Generated Qwen Response ---")
+        print(res["response"])
         print("=" * 55 + "\n")
 
 
