@@ -193,18 +193,31 @@ def _classify_candidate_heuristics(text: str) -> Tuple[MemoryType, float, float]
 
 
 def _is_filler_sentence(sent: str) -> bool:
-    """Detect trivial conversational pleasantries and fillers that provide no persistent value."""
-    cleaned = re.sub(r"[^\w\s]", "", sent.lower()).strip()
+    """Detect trivial conversational pleasantries, formatting artifacts, and fillers that provide no persistent value."""
+    # Clean leading formatting (list numbers, markdown bullets, brackets)
+    cleaned_sent = re.sub(r"^\s*(\d+[\.\)]|\*|\-|\+|\[|\#+)\s*", "", sent).strip()
+    cleaned = re.sub(r"[^\w\s]", "", cleaned_sent.lower()).strip()
+    words = cleaned.split()
+
+    if not words:
+        return True
+
+    # Standalone numbers, roman numerals, single letters, or short fragments without factual anchor
+    if len(words) < 3:
+        core_predicates = {"work", "live", "name", "prefer", "like", "graduated", "degree", "use", "code"}
+        if not any(kw in cleaned for kw in core_predicates):
+            return True
+
     fillers = {
         "hello", "hi", "hey", "ok", "okay", "thanks", "thank you", "sure",
         "noted", "got it", "understood", "welcome", "you are welcome",
         "great", "sounds good", "alright", "yes", "no", "congratulations",
         "congrats", "good morning", "good evening", "nice to meet you",
-        "pleased to meet you"
+        "pleased to meet you", "fascinating area"
     }
     if cleaned in fillers:
         return True
-    if re.match(r"^(hello|hi|hey|congratulations on|congrats on)\b", cleaned):
+    if re.match(r"^(hello|hi|hey|congratulations on|congrats on|how can i help)\b", cleaned):
         return True
     return False
 
@@ -246,8 +259,9 @@ def extract_memories(
             sentences = [content]
 
         for sent in sentences:
+            sent = re.sub(r"^\s*(\d+[\.\)]|\*|\-|\+|\[|\#+)\s*", "", sent).strip()
             # Skip trivial greetings or conversational fillers
-            if _is_filler_sentence(sent):
+            if not sent or _is_filler_sentence(sent):
                 continue
 
             normalized_key = " ".join(sent.lower().split())

@@ -82,6 +82,12 @@ def parse_args():
         default="outputs/experiments",
         help="Directory to save structured evaluation results.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of dataset examples to evaluate (default: evaluate full dataset split).",
+    )
     return parser.parse_args()
 
 
@@ -140,7 +146,11 @@ def main():
         dataset = eval_data
         exp_name = "longmemeval_eval_comparison"
 
-    print(f"[*] Loaded dataset '{args.dataset}' with {len(dataset)} examples.")
+    if args.limit is not None and args.limit > 0:
+        dataset = dataset[:args.limit]
+        exp_name = f"{exp_name}_n{len(dataset)}"
+
+    print(f"[*] Loaded dataset '{args.dataset}' evaluating exactly {len(dataset)} examples.")
 
     # 3. Strategy Suite Setup
     strategy_constructors = {

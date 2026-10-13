@@ -330,10 +330,10 @@ class ExperimentHarness:
         print(f"[*] Strategies: {list(strategy_constructors.keys())}")
 
         for budget in budgets:
-            print(f"\n---> Evaluating Budget: {budget} tokens <---")
+            print(f"\n---> Evaluating Budget: {budget} tokens <---", flush=True)
             for strat_key, strat_factory in strategy_constructors.items():
-                print(f"  Running Strategy: {strat_key}...")
-                for example in dataset:
+                print(f"  Running Strategy: {strat_key}...", flush=True)
+                for ex_idx, example in enumerate(dataset, start=1):
                     # Fresh strategy instance per question to prevent cross-contamination
                     strategy_instance = strat_factory(budget=budget)
                     res = self.run_single_comparison(
@@ -342,6 +342,7 @@ class ExperimentHarness:
                         budget=budget
                     )
                     all_results.append(res)
+                    print(f"    [{strat_key}] ({ex_idx}/{len(dataset)}) {example.id}: acc={res.substring_accuracy}, tokens={res.storage_tokens_used}", flush=True)
 
         # Aggregate metrics
         summary = self.aggregate_results(all_results, budgets)
@@ -395,6 +396,18 @@ class ExperimentHarness:
                     "avg_storage_tokens": round(sum(i.storage_tokens_used for i in items) / n, 1),
                     "avg_context_tokens": round(sum(i.context_tokens_used for i in items) / n, 1),
                     "avg_latency_ms": round(sum(i.total_latency_ms for i in items) / n, 1),
+                }
+
+                cat_breakdown: Dict[str, List[QuestionEvaluationResult]] = collections.defaultdict(list)
+                for i in items:
+                    cat_breakdown[i.category].append(i)
+                summary[strat_name][budget]["by_category"] = {
+                    cat: {
+                        "count": len(c_items),
+                        "accuracy": round(sum(ci.substring_accuracy for ci in c_items) / len(c_items), 4),
+                        "token_f1": round(sum(ci.token_f1 for ci in c_items) / len(c_items), 4),
+                    }
+                    for cat, c_items in cat_breakdown.items()
                 }
 
         return summary
