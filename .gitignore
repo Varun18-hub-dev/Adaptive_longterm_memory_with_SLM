@@ -35,6 +35,7 @@ env.bak/
 venv.bak/
 
 # Datasets and large research files (LongMemEval, checkpoints, weights)
+data/
 data/long_mem_eval/
 data/*.jsonl
 data/*.arrow

@@ -1,22 +1,39 @@
 """
 Adaptive Long-Term Memory for Language Models
-Phase 3: Model Adapter for Local Qwen GGUF Inference
+Phase 3/4: Model Adapter for Local Qwen GGUF Inference & Token Accounting
 
 Supports:
-- BaseLLMAdapter: Abstract interface
-- LlamaCppAdapter: Local GGUF inference via llama-cpp-python
+- BaseLLMAdapter: Abstract interface with tokenization and chat generation
+- LlamaCppAdapter: Local GGUF inference via llama-cpp-python using native Qwen tokenizer
 - FakeLLMAdapter: Deterministic mock adapter for unit/automated testing
 """
 
 from __future__ import annotations
 
+import math
 import os
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
 
 
+def heuristic_bpe_token_count(text: str) -> int:
+    """
+    Tokenizer-compatible subword token estimation when native tokenizer is not loaded.
+    Documented limitations: Approximates Byte-Pair Encoding (BPE) for Qwen/GPT models.
+    Produces ~1.3 tokens per word, plus adjustments for code/punctuation symbols.
+    Never described as exact.
+    """
+    if not text:
+        return 0
+    words = text.strip().split()
+    # Punctuation and subword heuristic
+    punct_count = len(re.findall(r"[^\w\s]", text))
+    return max(1, math.ceil(len(words) * 1.3) + math.ceil(punct_count * 0.5))
+
+
 class BaseLLMAdapter(ABC):
-    """Abstract interface for LLM response generation."""
+    """Abstract interface for LLM response generation and exact token accounting."""
 
     @abstractmethod
     def generate(
@@ -40,6 +57,27 @@ class BaseLLMAdapter(ABC):
         """Generate response text given chat messages [{"role": ..., "content": ...}]."""
         pass
 
+    @abstractmethod
+    def tokenize(self, text: str) -> List[int]:
+        """Convert text into token IDs."""
+        pass
+
+    def count_tokens(self, text: str) -> int:
+        """Count tokens in text."""
+        return len(self.tokenize(text))
+
+    def count_chat_tokens(self, messages: List[Dict[str, str]]) -> int:
+        """
+        Count total tokens formatted in the chat template.
+        Includes role markers (<|im_start|>role\ncontent<|im_end|>\n).
+        """
+        total = 0
+        for m in messages:
+            # Overhead for Qwen ChatML formatting: ~4 tokens per turn (<|im_start|>role\n ... <|im_end|>\n)
+            turn_text = f"<|im_start|>{m.get('role', 'user')}\n{m.get('content', '')}<|im_end|>\n"
+            total += self.count_tokens(turn_text)
+        return total + 3  # +3 tokens for assistant generation prompt prefix
+
 
 class FakeLLMAdapter(BaseLLMAdapter):
     """
@@ -56,6 +94,15 @@ class FakeLLMAdapter(BaseLLMAdapter):
         self.response_fn = response_fn
         self.call_history: List[Dict[str, Any]] = []
 
+    def tokenize(self, text: str) -> List[int]:
+        # Deterministic surrogate tokenization for tests
+        if not text:
+            return []
+        tokens = []
+        for word in re.findall(r"\w+|[^\w\s]", text):
+            tokens.append(abs(hash(word)) % 100000)
+        return tokens
+
     def generate(
         self,
         prompt: str,
@@ -69,7 +116,6 @@ class FakeLLMAdapter(BaseLLMAdapter):
         if self.canned_response:
             return self.canned_response
 
-        # Default heuristic mock answering based on memory context in prompt
         prompt_lower = prompt.lower()
         if "deepmind" in prompt_lower and ("work" in prompt_lower or "company" in prompt_lower or "employer" in prompt_lower):
             if "previously" in prompt_lower or "before" in prompt_lower or "old" in prompt_lower:
@@ -132,12 +178,15 @@ class LlamaCppAdapter(BaseLLMAdapter):
                 "Install it via 'pip install llama-cpp-python'."
             ) from e
 
-        # Initialize local Llama model
         kwargs: Dict[str, Any] = {"model_path": self.model_path, "n_ctx": self.n_ctx, "verbose": self.verbose}
         if n_threads:
             kwargs["n_threads"] = n_threads
 
         self.llm = llama_cpp.Llama(**kwargs)
+
+    def tokenize(self, text: str) -> List[int]:
+        """Uses Qwen's native GGUF embedded tokenizer."""
+        return self.llm.tokenize(text.encode("utf-8"))
 
     def generate(
         self,

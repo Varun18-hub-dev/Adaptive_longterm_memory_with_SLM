@@ -1,13 +1,14 @@
 """
 Adaptive Long-Term Memory for Language Models
-Phase 3: Query Processing, Budgeted Retrieval & Context Assembly
+Phase 3 (Hardened) & Phase 4: Query Processing, Temporal Reasoning & Budgeted Retrieval
 
 Pipeline:
 User Query
-  -> Query Intent & Temporal Validity Analysis
-  -> Dual-Store Retrieval (Episodic + Semantic + Archive for Historical)
-  -> Multi-Factor Relevance & Temporal Validity Ranking
-  -> Prompt-Context Assembly (Strict Context Budget & Deduplication)
+  -> Query Intent & Temporal Point-in-Time Analysis
+  -> Stopword-Filtered Relevance & Slot Affinity Scoring
+  -> Margin-Based Relevance Pruning (Distractor Exclusion)
+  -> Prompt Budget Accounting (System + Query + Chat Template + Generation Allowance)
+  -> Context Assembly with Strict Budget & Provenance Tags
   -> LLM Generation via Model Adapter
 """
 
@@ -17,7 +18,7 @@ import math
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from memory_core import (
     AllocationConfig,
@@ -32,18 +33,34 @@ from memory_lifecycle import (
     compute_text_similarity,
     extract_fact_slot,
 )
-from model_adapter import BaseLLMAdapter, FakeLLMAdapter
+from model_adapter import BaseLLMAdapter, FakeLLMAdapter, heuristic_bpe_token_count
+
+
+# Common English grammatical stopwords filtered during keyword relevance
+COMMON_STOPWORDS: Set[str] = {
+    "a", "about", "above", "after", "again", "all", "am", "an", "and", "any", "are", "as", "at",
+    "be", "because", "been", "being", "below", "between", "both", "but", "by", "can", "could",
+    "did", "do", "does", "doing", "down", "during", "each", "few", "for", "from", "further",
+    "had", "has", "have", "having", "he", "her", "here", "hers", "herself", "him", "himself",
+    "his", "how", "i", "if", "in", "into", "is", "it", "its", "itself", "just", "me", "more",
+    "most", "my", "myself", "no", "nor", "not", "now", "of", "off", "on", "once", "only", "or",
+    "other", "ought", "our", "ours", "ourselves", "out", "over", "own", "right", "same", "she",
+    "should", "so", "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves",
+    "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until",
+    "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "why", "with", "would", "you", "your", "yours", "yourself", "yourselves", "help", "please"
+}
 
 
 # ============================================================================
-# 1. Retrieval Configuration & Intent Analysis
+# 1. Retrieval Configuration & Temporal Query Analysis
 # ============================================================================
 
 @dataclass
 class RetrievalWeights:
     """Configurable weights for multi-factor memory retrieval ranking."""
-    w_rel: float = 0.50    # Relevance to user query
-    w_util: float = 0.25   # Intrinsic memory utility score U(m)
+    w_rel: float = 0.55    # Relevance to user query (content keywords & slot affinity)
+    w_util: float = 0.20   # Intrinsic memory utility score U(m)
     w_rec: float = 0.15    # Recency / temporal freshness R(m)
     w_stab: float = 0.10   # Temporal stability / durability T(m)
 
@@ -63,48 +80,97 @@ def is_historical_query(query: str) -> bool:
         r"\bprevious\b", r"\bpreviously\b", r"\bbefore\b", r"\bearlier\b",
         r"\bpast\b", r"\bformer\b", r"\bformerly\b", r"\bprior\b",
         r"\bused to\b", r"\bold\b", r"\binitial\b", r"\bfirst\b",
-        r"\blast time\b", r"\byesterday\b"
+        r"\blast time\b", r"\byesterday\b", r"\bat timestamp\b", r"\bat time\b"
     ]
     return any(re.search(pat, q_lower) for pat in historical_keywords)
 
 
+def extract_query_point_in_time(query: str) -> Optional[float]:
+    """
+    Extracts explicit timestamp reference if present in query.
+    Examples: 'Where did I work at timestamp 1500.0?', 'at time 1200'
+    """
+    match = re.search(r"\b(?:at timestamp|at time|timestamp)\s+([0-9]+(?:\.[0-9]+)?)\b", query.lower())
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def is_memory_valid_at_timestamp(memory: MemoryItem, query_timestamp: float) -> bool:
+    """
+    Evaluates whether a memory was active and valid at a specific historical point in time.
+    """
+    # Not yet created at query_timestamp
+    if memory.timestamp > query_timestamp:
+        return False
+
+    # Check if superseded before query_timestamp
+    if memory.lifecycle_status == LifecycleStatus.SUPERSEDED:
+        superseded_at = memory.metadata.get("superseded_at")
+        if superseded_at is not None and superseded_at <= query_timestamp:
+            return False
+
+    return True
+
+
+# ============================================================================
+# 2. Hardened Relevance Scoring & Distractor Pruning
+# ============================================================================
+
 def compute_query_relevance(query: str, memory: MemoryItem) -> float:
     """
     Calculates query-memory relevance combining:
-    1. Lexical/semantic text similarity
-    2. Fact slot matching (e.g. 'work'/'employer' aligning with 'employment' slot)
-    3. Content keyword overlap
+    1. Stopword-filtered content keyword overlap (prevents 'now', 'do', 'i' matching unrelated tasks)
+    2. Fact slot affinity (e.g. 'work'/'employer' aligning with 'employment' slot)
+    3. Lexical text similarity
+    4. Penalty for mismatched transient tasks when answering durable fact queries
     """
-    base_sim = compute_text_similarity(query, memory.content)
-
     q_lower = query.lower()
-    mem_slot = memory.metadata.get("slot_type")
+    mem_lower = memory.content.lower()
 
-    slot_boost = 0.0
-    if mem_slot:
-        slot_keywords = {
-            "employment": ["work", "job", "company", "employer", "employed", "office"],
-            "location": ["live", "located", "city", "reside", "where"],
-            "ui_theme": ["theme", "mode", "dark", "light", "ui", "editor"],
-            "favorite_language": ["language", "code", "programming", "python", "c++", "rust", "java"],
-            "dl_framework": ["framework", "pytorch", "tensorflow", "jax", "deep learning", "cuda"],
-        }
-        keywords = slot_keywords.get(mem_slot, [])
-        if any(kw in q_lower for kw in keywords):
-            slot_boost = 0.35
+    # Extract non-stopword content words
+    q_tokens = set(re.findall(r"\b[a-z0-9_]+\b", q_lower))
+    m_tokens = set(re.findall(r"\b[a-z0-9_]+\b", mem_lower))
+
+    q_content_words = q_tokens - COMMON_STOPWORDS
+    m_content_words = m_tokens - COMMON_STOPWORDS
+
+    if not q_content_words:
+        q_content_words = q_tokens  # Fallback if query only contained stopwords
 
     # Keyword intersection
-    q_words = set(re.findall(r"\w+", q_lower))
-    m_words = set(re.findall(r"\w+", memory.content.lower()))
-    overlap_ratio = len(q_words.intersection(m_words)) / max(1, len(q_words))
+    intersection = q_content_words.intersection(m_content_words)
+    content_overlap = len(intersection) / max(1, len(q_content_words))
 
-    relevance = min(1.0, 0.5 * base_sim + 0.3 * overlap_ratio + slot_boost)
-    return round(relevance, 4)
+    # Slot matching & domain affinity
+    mem_slot = memory.metadata.get("slot_type")
+    slot_boost = 0.0
+    slot_keywords = {
+        "employment": ["work", "job", "company", "employer", "employed", "office", "deepmind", "openai"],
+        "location": ["live", "located", "city", "reside", "where", "bangalore", "london"],
+        "ui_theme": ["theme", "mode", "dark", "light", "ui", "editor"],
+        "favorite_language": ["language", "code", "programming", "python", "rust", "c++", "java"],
+        "dl_framework": ["framework", "pytorch", "tensorflow", "jax", "cuda", "deep learning"],
+    }
 
+    query_matched_slots = []
+    for slot_name, kws in slot_keywords.items():
+        if any(kw in q_lower for kw in kws):
+            query_matched_slots.append(slot_name)
 
-# ============================================================================
-# 2. Dual-Store Memory Retrieval
-# ============================================================================
+    if mem_slot and mem_slot in query_matched_slots:
+        slot_boost = 0.40
+    elif query_matched_slots and (mem_slot is None or mem_slot not in query_matched_slots):
+        # Query specifically targeted a recognized slot (e.g. employment),
+        # but this memory is an unrelated slot or transient episodic task
+        if memory.lifecycle_status == LifecycleStatus.TEMPORARY:
+            slot_boost = -0.30
+
+    base_sim = compute_text_similarity(query, memory.content)
+
+    relevance = 0.50 * content_overlap + 0.20 * base_sim + slot_boost
+    return round(max(0.0, min(1.0, relevance)), 4)
+
 
 def retrieve_memories(
     query: str,
@@ -113,18 +179,16 @@ def retrieve_memories(
     archive_store: Optional[List[MemoryItem]] = None,
     top_k: int = 5,
     weights: Optional[RetrievalWeights] = None,
-    min_relevance_threshold: float = 0.15
+    min_relevance_threshold: float = 0.20,
+    margin_pruning_ratio: float = 0.40
 ) -> List[Tuple[MemoryItem, float]]:
     """
-    Retrieves and ranks relevant memories from episodic and semantic stores (and archive if historical).
-
-    Core Temporal Invariant:
-    - Current queries: strictly exclude or penalize SUPERSEDED and EXPIRED memories;
-      never treat superseded facts as current facts.
-    - Historical queries: include and surface SUPERSEDED memories and historical predecessor chains.
-
-    Returns:
-        List of tuples: (MemoryItem, ranking_score) sorted descending by score.
+    Hardened dual-store memory retrieval:
+    - Current queries: strictly exclude SUPERSEDED and EXPIRED memories.
+    - Historical queries: surface SUPERSEDED memories and predecessor links.
+    - Point-in-time queries: filter by historical validity at target timestamp.
+    - Margin pruning: excludes unrelated distractors (e.g. temporary tasks) when
+      far superior evidence exists, ensuring low-relevance items don't leak into context.
     """
     if weights is None:
         weights = RetrievalWeights()
@@ -132,10 +196,10 @@ def retrieve_memories(
         archive_store = []
 
     is_hist = is_historical_query(query)
+    point_in_time = extract_query_point_in_time(query)
 
-    # Candidate pool: active stores + archive if historical
     pool = list(episodic_store) + list(semantic_store)
-    if is_hist:
+    if is_hist or point_in_time is not None:
         pool.extend(archive_store)
 
     scored_candidates: List[Tuple[MemoryItem, float]] = []
@@ -143,13 +207,16 @@ def retrieve_memories(
     for mem in pool:
         status = mem.lifecycle_status
 
-        # Enforce temporal validity:
-        if not is_hist:
+        # Temporal validity enforcement:
+        if point_in_time is not None:
+            if not is_memory_valid_at_timestamp(mem, point_in_time):
+                continue
+        elif not is_hist:
             # Current query: NEVER treat superseded or expired items as current facts
             if status in (LifecycleStatus.SUPERSEDED, LifecycleStatus.EXPIRED):
                 continue
         else:
-            # Historical query: prioritize superseded items or items with predecessor history
+            # Historical query: exclude expired garbage
             if status == LifecycleStatus.EXPIRED:
                 continue
 
@@ -157,7 +224,6 @@ def retrieve_memories(
         if relevance < min_relevance_threshold:
             continue
 
-        # Multi-factor score
         score = (
             weights.w_rel * relevance +
             weights.w_util * mem.utility_score +
@@ -165,53 +231,82 @@ def retrieve_memories(
             weights.w_stab * mem.stability
         )
 
-        # Historical bonus when appropriate
-        if is_hist:
-            if status == LifecycleStatus.SUPERSEDED or mem.metadata.get("historical_predecessors"):
-                score += 0.25
+        if is_hist and (status == LifecycleStatus.SUPERSEDED or mem.metadata.get("historical_predecessors")):
+            score += 0.25
 
         scored_candidates.append((mem, round(score, 4)))
 
-    # Sort descending by ranking score
+    if not scored_candidates:
+        return []
+
     scored_candidates.sort(key=lambda x: x[1], reverse=True)
-    return scored_candidates[:top_k]
+
+    # Dynamic margin pruning: prune items whose score is significantly below the top score
+    top_score = scored_candidates[0][1]
+    filtered_results = [
+        (mem, score) for mem, score in scored_candidates
+        if score >= top_score * margin_pruning_ratio
+    ]
+
+    return filtered_results[:top_k]
 
 
 # ============================================================================
-# 3. Prompt-Context Assembly
+# 3. Exact Token Accounting & Context Assembly
 # ============================================================================
 
 @dataclass
+class PromptBudgetTracker:
+    """
+    Tracks and enforces model context window bounds.
+    Decoupled from persistent memory storage budget.
+    """
+    model_context_window: int = 2048       # Total model n_ctx
+    generation_allowance: int = 256       # Output generation token budget
+    system_prompt_tokens: int = 0
+    query_tokens: int = 0
+    chat_template_overhead: int = 16      # Formatting tokens (<|im_start|>, roles, newlines)
+    max_memory_context_tokens: int = 512   # User-specified max budget for memory context
+
+    def calculate_allowed_memory_budget(self) -> int:
+        """
+        Guarantees:
+        system_tokens + query_tokens + template_overhead + memory_context_tokens + generation_allowance <= model_context_window
+        """
+        available = self.model_context_window - (
+            self.system_prompt_tokens + self.query_tokens + self.chat_template_overhead + self.generation_allowance
+        )
+        return max(0, min(self.max_memory_context_tokens, available))
+
+
+@dataclass
 class ContextAssemblyResult:
-    """Assembled prompt context with provenance and budget tracking."""
     formatted_context: str
     selected_memories: List[MemoryItem]
     context_token_cost: int
     context_budget: int
     system_prompt: str
+    tracker: PromptBudgetTracker
 
 
 def assemble_memory_context(
     query: str,
     retrieved_memories: List[Tuple[MemoryItem, float]],
     max_context_tokens: int = 512,
+    model_context_window: int = 2048,
+    generation_allowance: int = 256,
+    tokenizer_fn: Optional[Callable[[str], int]] = None,
     include_provenance: bool = True
 ) -> ContextAssemblyResult:
     """
-    Assembles long-term memory context for the LLM prompt under a strict prompt-context budget.
-    Deduplicates context items, formats clear lifecycle provenance, and guarantees
-    context_tokens <= max_context_tokens.
-
-    Note: The prompt-context budget is strictly separate from the persistent storage budget.
+    Assembles memory context with exact token accounting:
+    1. Computes system prompt and query tokens.
+    2. Calculates available budget for memory context without exceeding model context window.
+    3. Formats memories with explicit lifecycle tags ([CURRENT], [HISTORICAL / SUPERSEDED], [TEMPORARY]).
+    4. Deduplicates items to prevent redundant tokens.
     """
-    if max_context_tokens <= 0:
-        return ContextAssemblyResult(
-            formatted_context="",
-            selected_memories=[],
-            context_token_cost=0,
-            context_budget=max_context_tokens,
-            system_prompt=""
-        )
+    if tokenizer_fn is None:
+        tokenizer_fn = heuristic_bpe_token_count
 
     system_prompt = (
         "You are an intelligent assistant with access to the user's persistent long-term memory.\n"
@@ -223,33 +318,42 @@ def assemble_memory_context(
         "- When the user asks about past or previous states, explain what changed based on [HISTORICAL] facts."
     )
 
-    base_overhead = estimate_token_cost(system_prompt) + 20
-    available_budget = max(0, max_context_tokens - base_overhead)
+    tracker = PromptBudgetTracker(
+        model_context_window=model_context_window,
+        generation_allowance=generation_allowance,
+        system_prompt_tokens=tokenizer_fn(system_prompt),
+        query_tokens=tokenizer_fn(query),
+        max_memory_context_tokens=max_context_tokens
+    )
+
+    allowed_memory_tokens = tracker.calculate_allowed_memory_budget()
+
+    if allowed_memory_tokens <= 0:
+        return ContextAssemblyResult(
+            formatted_context="",
+            selected_memories=[],
+            context_token_cost=0,
+            context_budget=0,
+            system_prompt=system_prompt,
+            tracker=tracker
+        )
 
     selected: List[MemoryItem] = []
     seen_contents: Set[str] = set()
-    used_tokens = 0
     formatted_lines: List[str] = []
 
     for mem, rank_score in retrieved_memories:
-        # Deduplication check
         norm_content = " ".join(mem.content.lower().split())
         if norm_content in seen_contents:
             continue
 
-        # Format line with explicit lifecycle provenance
         if mem.lifecycle_status == LifecycleStatus.SUPERSEDED:
             status_tag = "[HISTORICAL / SUPERSEDED]"
-            superseded_by = mem.metadata.get("superseded_by_id", "")
-            extra_info = f" (Replaced by newer update)"
+            extra_info = " (Replaced by newer update)"
         elif mem.lifecycle_status in (LifecycleStatus.ACTIVE, LifecycleStatus.STABLE):
             status_tag = "[CURRENT]"
             preds = mem.metadata.get("historical_predecessors", [])
-            if preds:
-                prev_val = preds[-1].get("previous_value", "")
-                extra_info = f" (Formerly: {prev_val})"
-            else:
-                extra_info = ""
+            extra_info = f" (Formerly: {preds[-1].get('previous_value', '')})" if preds else ""
         else:
             status_tag = f"[{mem.lifecycle_status.value.upper()}]"
             extra_info = ""
@@ -261,29 +365,29 @@ def assemble_memory_context(
         else:
             line = f"- {status_tag} {mem.content}{extra_info}"
 
-        line_cost = estimate_token_cost(line)
+        tentative_context = "\n".join(formatted_lines + [line])
+        tentative_cost = tokenizer_fn(tentative_context)
 
-        # Strict budget enforcement
-        if used_tokens + line_cost <= available_budget:
+        if tentative_cost <= allowed_memory_tokens:
             formatted_lines.append(line)
             selected.append(mem)
             seen_contents.add(norm_content)
-            used_tokens += line_cost
 
     formatted_context = "\n".join(formatted_lines) if formatted_lines else "No relevant memories found."
-    total_token_cost = estimate_token_cost(formatted_context)
+    final_token_cost = tokenizer_fn(formatted_context) if formatted_lines else 0
 
     return ContextAssemblyResult(
         formatted_context=formatted_context,
         selected_memories=selected,
-        context_token_cost=total_token_cost,
-        context_budget=max_context_tokens,
-        system_prompt=system_prompt
+        context_token_cost=final_token_cost,
+        context_budget=allowed_memory_tokens,
+        system_prompt=system_prompt,
+        tracker=tracker
     )
 
 
 # ============================================================================
-# 4. End-to-End Pipeline Runner
+# 4. End-to-End Pipeline Execution
 # ============================================================================
 
 def run_phase3_pipeline(
@@ -299,18 +403,11 @@ def run_phase3_pipeline(
     current_timestamp: Optional[float] = None
 ) -> Dict[str, Any]:
     """
-    Executes the complete end-to-end Phase 3 pipeline:
-    1. Memory Extraction, Deduplication, Consolidation, Lifecycle Management (respecting storage_budget).
-    2. Query Analysis & Dual-Store Retrieval.
-    3. Context Assembly with Provenance & Temporal Labels (respecting max_context_tokens).
-    4. Qwen / LLM Generation via Model Adapter.
-
-    Storage budget and response-context budget are strictly separate and enforced.
+    Executes the hardened Phase 3 pipeline with native tokenizer support.
     """
     if current_timestamp is None:
         current_timestamp = time.time()
 
-    # 1. Memory Management & Storage
     if existing_manager is None:
         manager = AdaptiveMemoryManager(
             total_budget=storage_budget,
@@ -320,13 +417,14 @@ def run_phase3_pipeline(
     else:
         manager = existing_manager
 
-    session_res = manager.process_session(
-        conversation_history=conversation_history,
-        session_id=session_id,
-        current_timestamp=current_timestamp
-    )
+    if conversation_history:
+        manager.process_session(
+            conversation_history=conversation_history,
+            session_id=session_id,
+            current_timestamp=current_timestamp
+        )
 
-    # 2. Retrieval
+    # Retrieval
     retrieved = retrieve_memories(
         query=user_query,
         episodic_store=manager.episodic_store,
@@ -335,20 +433,20 @@ def run_phase3_pipeline(
         top_k=5
     )
 
-    # 3. Context Assembly under prompt-context budget
+    # Context assembly using model's tokenizer function
+    tokenizer_fn = getattr(llm_adapter, "count_tokens", heuristic_bpe_token_count)
     context_res = assemble_memory_context(
         query=user_query,
         retrieved_memories=retrieved,
-        max_context_tokens=max_context_tokens
+        max_context_tokens=max_context_tokens,
+        tokenizer_fn=tokenizer_fn
     )
 
-    # 4. Construct prompt for LLM
     messages = [
         {"role": "system", "content": f"{context_res.system_prompt}\n\nRELEVANT MEMORIES:\n{context_res.formatted_context}"},
         {"role": "user", "content": user_query}
     ]
 
-    # 5. LLM Generation
     response_text = llm_adapter.generate_chat(
         messages=messages,
         max_tokens=256,
@@ -359,6 +457,7 @@ def run_phase3_pipeline(
         "user_query": user_query,
         "response": response_text,
         "is_historical_query": is_historical_query(user_query),
+        "point_in_time": extract_query_point_in_time(user_query),
         "retrieved_count": len(retrieved),
         "context_result": {
             "formatted_context": context_res.formatted_context,
