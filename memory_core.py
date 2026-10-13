@@ -198,11 +198,13 @@ def _is_filler_sentence(sent: str) -> bool:
     fillers = {
         "hello", "hi", "hey", "ok", "okay", "thanks", "thank you", "sure",
         "noted", "got it", "understood", "welcome", "you are welcome",
-        "great", "sounds good", "alright", "yes", "no"
+        "great", "sounds good", "alright", "yes", "no", "congratulations",
+        "congrats", "good morning", "good evening", "nice to meet you",
+        "pleased to meet you"
     }
     if cleaned in fillers:
         return True
-    if re.match(r"^(hello|hi|hey)\s+\w+$", cleaned):
+    if re.match(r"^(hello|hi|hey|congratulations on|congrats on)\b", cleaned):
         return True
     return False
 

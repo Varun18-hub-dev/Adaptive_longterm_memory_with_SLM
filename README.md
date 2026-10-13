@@ -14,40 +14,47 @@ Instead of treating external memory as an unbounded store or applying static 50/
 
 ---
 
-## 2. Phase 1 Pipeline Architecture
+## 2. Pipeline Architecture (Phases 1 & 2)
 
 ```
-Conversation History
-        │
-        ▼
-[ 1. Memory Candidate Extraction & Deduplication ]
-  - Turn proposition segmentation
-  - Pleasantry/filler filtering
-  - Deduplication & occurrence frequency tracking
-  - Source provenance logging (sessions, turns, timestamps)
-        │
-        ▼
-[ 2. Utility Controller Scoring ]
+Multi-Session Conversation History
+                 │
+                 ▼
+[ 1. Memory Candidate Extraction & Soft Deduplication ]
+  - Turn proposition segmentation & pleasantry/filler filtering
+  - Semantic similarity matching (Jaccard + Gestalt sequence matching)
+  - Deduplication, frequency tracking, and alias linking
+  - Comprehensive source provenance logging (turns, roles, timestamps)
+                 │
+                 ▼
+[ 2. Conflict Detection & Temporal Superseding ]
+  - Slot-based entity/attribute extraction (e.g. employment, preferences)
+  - Temporal ordering: newer facts supersede older facts (ACTIVE vs SUPERSEDED)
+  - Historical evidence preservation: predecessor links retained for retroactive queries
+                 │
+                 ▼
+[ 3. Episodic-to-Semantic Consolidation ]
+  - High-frequency / high-stability episodic memories promoted to semantic knowledge
+  - Compression of repeated interactions into compact representations
+  - Source observations tracked in metadata['source_evidence']
+                 │
+                 ▼
+[ 4. Utility Scoring & Lifecycle Evaluation ]
   - Recency (R) exponential time-decay
-  - Importance (I) intrinsic value
-  - Frequency (F) saturation normalization
-  - Temporal Stability (T) invariance over time
-  - Consistency (C) confidence score
-        │
-        ▼
-[ 3. Adaptive Budget Allocation ]
-  - Estimated demand calculation per memory type
-  - Clamping within configurable [min_share, max_share] bounds
-  - Hard total token budget enforcement
-        │
-        ▼
-[ 4. Memory Selection (Store-Budget Fit) ]
-  - Knapsack greedy density ranking: U(m) / token_cost(m)
-  - Zero-overrun guarantee per store
-        │
-        ▼
-[ 5. Local Structured Persistence ]
-  - Transparent JSON storage (stores, metadata, allocation summary)
+  - Importance (I), Frequency saturation (F_norm), Temporal Stability (T), Consistency (C)
+  - Justified status transitions: ACTIVE, STABLE, TEMPORARY, SUPERSEDED, EXPIRED
+                 │
+                 ▼
+[ 5. Adaptive Budget Allocation & Eviction Maintenance ]
+  - Demand-weighted dynamic budget split within configurable share bounds
+  - Eviction of expired/superseded items to archive pool
+  - Knapsack utility-density selection (U(m) / token_cost(m))
+  - Hard constraint: active_tokens <= total_budget
+                 │
+                 ▼
+[ 6. Auditing & Structured Local Persistence ]
+  - Every merge, consolidation, superseding, transition, and eviction recorded in AuditLog
+  - Local JSON state serialization (active stores, archive, summary, audit log)
 ```
 
 ---
@@ -89,17 +96,19 @@ Given a total storage budget $B$ in tokens:
 
 ```
 adaptive_mememory_management/
-├── .gitignore               # Excludes datasets, model weights, checkpoints, logs, virtualenvs
-├── README.md                # Research specifications, math formulation, and usage guide
-├── memory_core.py           # Core Phase 1 engine: schema, extraction, scoring, allocation, storage
-├── run_pipeline.py          # Command-line driver for running Phase 1 on conversations
-├── test_memory_core.py      # Comprehensive unit and integration test suite
-└── outputs/                 # Output directory for structured persisted memory states (git-ignored)
+├── .gitignore                  # Excludes datasets, model weights, checkpoints, logs, virtualenvs
+├── README.md                   # Research specifications, math formulation, and usage guide
+├── memory_core.py              # Phase 1: schemas, extraction, scoring, allocation, storage
+├── memory_lifecycle.py         # Phase 2: deduplication, conflicts, consolidation, transitions, auditing
+├── run_pipeline.py             # CLI driver for running Phase 1 & Phase 2 pipelines
+├── test_memory_core.py         # Phase 1 unit and integration test suite (11 tests)
+├── test_memory_lifecycle.py    # Phase 2 lifecycle and maintenance test suite (8 tests)
+└── outputs/                    # Output directory for structured persisted states (git-ignored)
 ```
 
 ### Module Responsibilities:
 - `memory_core.py`:
-  - `MemoryItem` & Enums: Complete schema definition.
+  - `MemoryItem` & Enums: Core memory representation across all phases.
   - `ScoringWeights`: Parameter container with sum-to-1 validation.
   - `AllocationConfig`: Budget bounds and share constraints.
   - `extract_memories(...)`: Candidate parsing, filler filtering, deduplication, and provenance tracking.
@@ -107,7 +116,15 @@ adaptive_mememory_management/
   - `allocate_budget(...)`: Dynamic episodic vs. semantic budget allocation.
   - `select_memories(...)`: Budget enforcement and greedy knapsack selection.
   - `LocalJsonMemoryStore`: Decoupled persistence interface saving and loading structured JSON.
-  - `run_phase1_pipeline(...)`: End-to-end integration orchestrator.
+  - `run_phase1_pipeline(...)`: End-to-end integration orchestrator for Phase 1.
+- `memory_lifecycle.py`:
+  - `deduplicate_semantically(...)`: Soft deduplication combining Jaccard and sequence matching.
+  - `detect_conflicts_and_supersede(...)`: Temporal conflict resolution marking older items `SUPERSEDED` and linking predecessors.
+  - `consolidate_episodic_memories(...)`: Merging repeated episodic items into semantic knowledge while retaining `metadata['source_evidence']`.
+  - `evaluate_lifecycle_transitions(...)`: Status state machine (`ACTIVE`, `STABLE`, `TEMPORARY`, `SUPERSEDED`, `EXPIRED`).
+  - `maintain_memory_budget(...)`: Eviction of expired/superseded items and budget maintenance.
+  - `AdaptiveMemoryManager`: Stateful multi-session manager with complete audit trail persistence.
+  - `run_phase2_pipeline(...)`: High-level procedural runner for Phase 2.
 
 ---
 
@@ -115,35 +132,36 @@ adaptive_mememory_management/
 
 ### Running Tests
 
-Execute the unit test suite:
+Execute all tests across Phase 1 and Phase 2:
 ```bash
-python -m unittest test_memory_core.py
+python -m unittest discover -v -s . -p "test_*.py"
 ```
 
-All 11 tests verify:
-- Schema serialization and lifecycle statuses
-- Extraction, filler suppression, deduplication, and provenance
-- Utility scoring, weight validation, and recency/stability independence
-- Adaptive allocation bounds under extreme demand skews
-- Selection strictness under tight token budgets
-- JSON persistence roundtrip fidelity
-- Full deterministic pipeline integration
+Or run modules individually:
+```bash
+python -m unittest -v test_memory_core.py
+python -m unittest -v test_memory_lifecycle.py
+```
 
 ### Running the Pipeline
 
-Run the pipeline using default sample conversations:
+Run Phase 2 (multi-session lifecycle demo with evolving information and audit trails):
 ```bash
-python run_pipeline.py --budget 120
+python run_pipeline.py --phase 2 --budget 120
 ```
 
-Run with custom budget, weights, and input JSON:
+Run Phase 1 (single-session baseline allocation):
+```bash
+python run_pipeline.py --phase 1 --budget 120
+```
+
+Run with custom conversation JSON, weights, and budget:
 ```bash
 python run_pipeline.py \
+  --phase 2 \
   --input path/to/conversation.json \
   --output outputs/my_state.json \
-  --budget 250 \
-  --min-episodic 0.25 \
-  --max-episodic 0.75 \
+  --budget 200 \
   --weights 0.25 0.25 0.20 0.15 0.15 \
   --seed 42
 ```
@@ -152,8 +170,7 @@ python run_pipeline.py \
 
 ## 6. Research Constraints & Next Phases
 
-- **Phase 1 Scope**: Focuses strictly on the local core (candidate extraction, scoring, budget allocation, knapsack selection, local JSON persistence).
+- **Phase 1 & Phase 2 Scope**: Rule-based extraction, soft deduplication, temporal conflict resolution, consolidation with historical provenance, dynamic allocation, and audit trail logging.
 - **Subsequent Phases**:
-  - *Phase 2*: Memory consolidation (clustering & summarization) and state transitions (`ACTIVE` $\rightarrow$ `SUPERSEDED` upon conflicting updates).
-  - *Phase 3*: Budgeted retrieval and temporal validity checking.
-  - *Phase 4*: Controlled empirical benchmarking on LongMemEval against fixed-allocation and flat-vector baselines.
+  - *Phase 3*: Budgeted retrieval and SLM/LLM temporal validity verification against queries.
+  - *Phase 4*: Controlled empirical benchmarking on LongMemEval against flat-vector and static-allocation baselines.

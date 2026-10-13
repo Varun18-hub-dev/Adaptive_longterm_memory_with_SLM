@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Command-line interface to execute the Phase 1 Adaptive Memory Management pipeline.
+Command-line interface to execute the Adaptive Memory Management pipeline (Phases 1 & 2).
 
 Usage:
-    python run_pipeline.py [--input INPUT_JSON] [--output OUTPUT_JSON] [--budget BUDGET]
+    python run_pipeline.py [--phase {1,2}] [--input INPUT_JSON] [--output OUTPUT_JSON] [--budget BUDGET]
 """
 
 import argparse
@@ -18,12 +18,16 @@ from memory_core import (
     ScoringWeights,
     run_phase1_pipeline,
 )
+from memory_lifecycle import (
+    AdaptiveMemoryManager,
+    run_phase2_pipeline,
+)
 
 
-DEFAULT_SAMPLE_CONVERSATION = [
+DEFAULT_SAMPLE_CONVERSATION_S1 = [
     {
         "role": "user",
-        "content": "Hi, I am Alex. I work at deepmind on long-term memory architectures.",
+        "content": "Hi, I am Alex. I work at OpenAI on long-term memory architectures.",
         "timestamp": 1700000000.0,
     },
     {
@@ -63,28 +67,53 @@ DEFAULT_SAMPLE_CONVERSATION = [
     },
 ]
 
+DEFAULT_SAMPLE_CONVERSATION_S2 = [
+    {
+        "role": "user",
+        "content": "Hi, I moved to DeepMind recently. I work at DeepMind now.",
+        "timestamp": 1700086400.0,
+    },
+    {
+        "role": "assistant",
+        "content": "Congratulations on moving to DeepMind!",
+        "timestamp": 1700086410.0,
+    },
+    {
+        "role": "user",
+        "content": "I still prefer concise Python examples using dataclasses.",
+        "timestamp": 1700086450.0,
+    },
+]
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run Phase 1: Adaptive Long-Term Memory Pipeline"
+        description="Run Adaptive Long-Term Memory Pipeline (Phase 1 & Phase 2)"
+    )
+    parser.add_argument(
+        "--phase",
+        type=int,
+        choices=[1, 2],
+        default=2,
+        help="Pipeline phase to execute: 1 (basic allocation) or 2 (lifecycle management & auditability). Default: 2.",
     )
     parser.add_argument(
         "--input",
         type=str,
         default=None,
-        help="Path to input conversation JSON file. If omitted, a sample conversation is used.",
+        help="Path to input conversation JSON file. If omitted, sample multi-session conversation is used.",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="outputs/phase1_memory_state.json",
-        help="Path to save the resulting memory state JSON.",
+        default=None,
+        help="Path to save the resulting memory state JSON. Defaults to outputs/phase{phase}_memory_state.json",
     )
     parser.add_argument(
         "--budget",
         type=int,
-        default=100,
-        help="Total token budget for memory allocation (default: 100).",
+        default=120,
+        help="Total token budget for memory allocation (default: 120).",
     )
     parser.add_argument(
         "--min-episodic",
@@ -123,18 +152,9 @@ def parse_args():
 
 def main():
     args = parse_args()
-
-    # Set random seed
     random.seed(args.seed)
 
-    # Load conversation history
-    if args.input and os.path.exists(args.input):
-        print(f"[*] Loading conversation from {args.input}")
-        with open(args.input, "r", encoding="utf-8") as f:
-            conversation_history = json.load(f)
-    else:
-        print("[*] Using default sample conversation history.")
-        conversation_history = DEFAULT_SAMPLE_CONVERSATION
+    output_path = args.output or f"outputs/phase{args.phase}_memory_state.json"
 
     # Initialize configs
     w_r, w_i, w_f, w_t, w_c = args.weights
@@ -147,35 +167,90 @@ def main():
         max_semantic_share=1.0 - args.min_episodic,
     )
 
+    print(f"[*] Executing Phase {args.phase} Pipeline")
     print(f"[*] Total Token Budget: {args.budget}")
     print(f"[*] Scoring Weights: {scoring_weights}")
 
-    # Run pipeline
-    results = run_phase1_pipeline(
-        conversation_history=conversation_history,
-        session_id=args.session_id,
-        total_budget=args.budget,
-        scoring_weights=scoring_weights,
-        allocation_config=allocation_config,
-        persistence_path=args.output,
-        current_timestamp=time.time(),
-    )
+    if args.phase == 1:
+        if args.input and os.path.exists(args.input):
+            with open(args.input, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        else:
+            history = DEFAULT_SAMPLE_CONVERSATION_S1
 
-    summary = results["allocation_summary"]
-    print("\n" + "=" * 50)
-    print("           PHASE 1 EXECUTION SUMMARY")
-    print("=" * 50)
-    print(f"Session ID:         {summary['session_id']}")
-    print(f"Total Budget:       {summary['total_budget']} tokens")
-    print(f"Allocated Episodic: {summary['allocated_budget']['episodic']} tokens")
-    print(f"Allocated Semantic: {summary['allocated_budget']['semantic']} tokens")
-    print(f"Used Episodic:      {summary['tokens_used']['episodic']} tokens")
-    print(f"Used Semantic:      {summary['tokens_used']['semantic']} tokens")
-    print(f"Total Used:         {summary['tokens_used']['total']} tokens")
-    print(f"Candidates Total:   {summary['candidate_counts']['total']} (Episodic: {summary['candidate_counts']['episodic']}, Semantic: {summary['candidate_counts']['semantic']})")
-    print(f"Selected Total:     {summary['selected_counts']['total']} (Episodic: {summary['selected_counts']['episodic']}, Semantic: {summary['selected_counts']['semantic']})")
-    print(f"Persistence output: {os.path.abspath(args.output)}")
-    print("=" * 50 + "\n")
+        results = run_phase1_pipeline(
+            conversation_history=history,
+            session_id=args.session_id,
+            total_budget=args.budget,
+            scoring_weights=scoring_weights,
+            allocation_config=allocation_config,
+            persistence_path=output_path,
+            current_timestamp=time.time(),
+        )
+
+        summary = results["allocation_summary"]
+        print("\n" + "=" * 55)
+        print("           PHASE 1 EXECUTION SUMMARY")
+        print("=" * 55)
+        print(f"Session ID:         {summary['session_id']}")
+        print(f"Total Budget:       {summary['total_budget']} tokens")
+        print(f"Allocated Episodic: {summary['allocated_budget']['episodic']} tokens")
+        print(f"Allocated Semantic: {summary['allocated_budget']['semantic']} tokens")
+        print(f"Used Episodic:      {summary['tokens_used']['episodic']} tokens")
+        print(f"Used Semantic:      {summary['tokens_used']['semantic']} tokens")
+        print(f"Total Used:         {summary['tokens_used']['total']} tokens")
+        print(f"Persistence output: {os.path.abspath(output_path)}")
+        print("=" * 55 + "\n")
+
+    else:
+        # Phase 2
+        manager = AdaptiveMemoryManager(
+            total_budget=args.budget,
+            scoring_weights=scoring_weights,
+            allocation_config=allocation_config,
+            persistence_path=output_path,
+        )
+
+        if args.input and os.path.exists(args.input):
+            with open(args.input, "r", encoding="utf-8") as f:
+                sessions_data = json.load(f)
+            if isinstance(sessions_data, list) and sessions_data and isinstance(sessions_data[0], list):
+                for idx, s in enumerate(sessions_data):
+                    manager.process_session(s, session_id=f"session_{idx+1}")
+            else:
+                manager.process_session(sessions_data, session_id=args.session_id)
+        else:
+            print("[*] Running multi-session evolution demonstration (Session 1 & Session 2)...")
+            res_s1 = manager.process_session(
+                DEFAULT_SAMPLE_CONVERSATION_S1, session_id="session_01", current_timestamp=1700000350.0
+            )
+            res_s2 = manager.process_session(
+                DEFAULT_SAMPLE_CONVERSATION_S2, session_id="session_02", current_timestamp=1700086450.0
+            )
+
+        print("\n" + "=" * 55)
+        print("           PHASE 2 LIFECYCLE EXECUTION SUMMARY")
+        print("=" * 55)
+        print(f"Total Budget Limit: {manager.total_budget} tokens")
+        total_used_tokens = sum(m.token_cost for m in manager.episodic_store + manager.semantic_store)
+        print(f"Active Stores Total Tokens: {total_used_tokens} tokens")
+        print(f"Active Episodic Items:      {len(manager.episodic_store)}")
+        print(f"Active Semantic Items:      {len(manager.semantic_store)}")
+        print(f"Archived (Superseded/Exp):  {len(manager.archive_store)}")
+        print(f"Total Audit Log Entries:    {len(manager.audit_log)}")
+
+        print("\n--- Active Semantic Knowledge ---")
+        for m in manager.semantic_store:
+            preds = m.metadata.get("historical_predecessors", [])
+            pred_note = f" (Superseded {len(preds)} older item)" if preds else ""
+            print(f"  [{m.lifecycle_status.value.upper()}] {m.content}{pred_note} (U={m.utility_score:.3f}, cost={m.token_cost})")
+
+        print("\n--- Archived / Superseded Items ---")
+        for m in manager.archive_store:
+            print(f"  [{m.lifecycle_status.value.upper()}] {m.content} (Superseded by: {m.metadata.get('superseded_by_id', 'N/A')})")
+
+        print(f"\nPersisted State: {os.path.abspath(output_path)}")
+        print("=" * 55 + "\n")
 
 
 if __name__ == "__main__":
