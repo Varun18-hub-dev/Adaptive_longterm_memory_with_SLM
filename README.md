@@ -170,5 +170,135 @@ adaptive_mememory_management/
 ├── test_memory_retrieval.py # Phase 3 retrieval, temporal, and prompt budget tests (11 tests)
 ├── test_strategies.py       # Phase 4 strategy tests (4 tests)
 ├── test_evaluation.py       # Phase 4 evaluation metrics & harness tests (4 tests)
+├── candidate_generation.py  # Phase 5: Modular candidate extractors & admission gate
+├── test_candidate_generation.py # Phase 5: Linguistic extraction & gate tests (14 tests)
+├── test_candidate_pipeline_hardening.py # Phase 5.1: Pipeline integration tests (6 tests)
+├── execution_trace.py       # Phase 6: Trace data models, tracer context, and SQLite store
+├── traced_pipeline.py       # Phase 6: Full 16-stage instrumented pipeline runner
+├── api_server.py            # Phase 6: Lightweight FastAPI REST API server
+├── test_execution_trace.py  # Phase 6: Trace & API test suite (13 tests)
 └── outputs/                 # Locally persisted outputs and experiment results (git-ignored)
+```
+
+---
+
+## 7. Memory Execution Trace & Observability API (Phase 6)
+
+Phase 6 introduces high-fidelity, structured observability that instruments all 16 execution stages of the memory lifecycle:
+
+1. `prompt_received`
+2. `candidate_extraction`
+3. `candidate_normalization`
+4. `utility_scoring`
+5. `admission_gate`
+6. `deduplication`
+7. `conflict_resolution`
+8. `memory_consolidation`
+9. `lifecycle_transitions`
+10. `adaptive_allocation`
+11. `persistence`
+12. `memory_retrieval`
+13. `reranking`
+14. `context_assembly`
+15. `slm_generation`
+16. `response_completed`
+
+### Starting the API Server Locally
+
+```bash
+uvicorn api_server:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### Example API Requests
+
+#### 1. Submit a prompt and receive response + trace ID
+```bash
+curl -X POST "http://127.0.0.1:8000/api/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "I work at DeepMind now.",
+    "session_id": "session_alex",
+    "storage_budget": 150,
+    "max_context_tokens": 256,
+    "use_fake_llm": true
+  }'
+```
+**Response:**
+```json
+{
+  "response": "You currently work at DeepMind.",
+  "trace_id": "trc_a2669806ee40",
+  "session_id": "session_alex",
+  "status": "completed",
+  "duration_ms": 3.52,
+  "cited_memory_ids": ["32d386d3-c35d-50b8-938b-b50418332a1c"]
+}
+```
+
+#### 2. Retrieve the complete execution trace
+```bash
+curl "http://127.0.0.1:8000/api/traces/trc_a2669806ee40"
+```
+
+#### 3. Inspect active episodic and semantic memories
+```bash
+curl "http://127.0.0.1:8000/api/memories?session_id=session_alex"
+```
+
+#### 4. Inspect specific memory with audit provenance
+```bash
+curl "http://127.0.0.1:8000/api/memories/32d386d3-c35d-50b8-938b-b50418332a1c?session_id=session_alex"
+```
+
+---
+
+## 8. Phase 7 & 7.1: Chat-First Memory UI & Observability
+
+A polished, responsive React + Vite + TypeScript application in `frontend/` connected to the FastAPI Memory Execution Trace backend.
+
+### Redesigned Layout Architecture
+1. **Left Sidebar (Session & Conversation Management)**:
+   - Recent chat threads and "+ New Chat" button.
+   - Clean session switching with isolated memory namespaces.
+   - Reset session action and modal trigger for deep Memory Stores Explorer.
+   - Collapsible to maximize reading room on desktop and mobile.
+2. **Center Chat Workspace (Primary Focus)**:
+   - Clean message bubbles with readable typography and generous whitespace.
+   - Live memory feedback chips (e.g. `✓ 1 fact remembered`, `2 memories recalled`) derived from actual trace events.
+   - Direct "Evidence Flow" link on each assistant message to inspect how that turn was processed.
+   - Multiline prompt input with auto-resize, keyboard submission, and compact settings popover for token budgets and adapter selection.
+3. **Right Sidebar (Compact 5-Step Memory Evidence Flow)**:
+   - 1. **Understand Prompt**: Validates input prompt and initializes session configuration.
+   - 2. **Evaluate Candidate Facts**: Extracts assertion candidates, scores utility $U(m)$, and applies admission quality gating.
+   - 3. **Update Memory**: Deduplicates, links temporal conflicts, consolidates recurring facts, and dynamically allocates token budgets.
+   - 4. **Retrieve Relevant Memories**: Searches stores for assertions matching query intent, reranks, and fits within token budget.
+   - 5. **Generate Response**: Generates response with context-grounded reasoning and records total execution latency.
+   - Clickable "View Details" on any step reveals structured evidence (candidate tokens, scoring factors $R, I, F, T$, gate reasons, and context tokens) with optional technical JSON for researchers.
+
+### Setup and Startup
+
+```bash
+# 1. Start the FastAPI backend (Terminal 1)
+uvicorn api_server:app --host 127.0.0.1 --port 8000 --reload
+
+# 2. Start the Frontend development server (Terminal 2)
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend will be available at `http://localhost:5173`. By default, Vite proxies `/api` requests to `http://127.0.0.1:8000`. You can also configure a custom backend endpoint via `VITE_API_BASE_URL`.
+
+### Running Verification Tests
+
+```bash
+# Run all Python backend tests (71 tests)
+python -m unittest discover -v -s . -p "test_*.py"
+
+# Run all Frontend unit & component tests (12 tests)
+cd frontend
+npm test
+
+# Build production bundle
+npm run build
 ```

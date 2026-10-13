@@ -173,6 +173,11 @@ def parse_args():
         help="Session identifier for provenance tracking.",
     )
     parser.add_argument(
+        "--use-hybrid-extractor",
+        action="store_true",
+        help="Use HybridCandidateExtractor (heuristic + Qwen SLM fallback) instead of pure heuristic extractor.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -203,6 +208,29 @@ def main():
     print(f"[*] Prompt-Context Budget:     {args.max_context_tokens} tokens")
     print(f"[*] Scoring Weights:           {scoring_weights}")
 
+    # Configure candidate extractor
+    candidate_extractor = None
+    if args.use_hybrid_extractor:
+        hybrid_adapter = None
+        if args.model_path and os.path.exists(args.model_path):
+            try:
+                print(f"[*] Initializing local Qwen GGUF for HybridCandidateExtractor: {args.model_path}")
+                hybrid_adapter = LlamaCppAdapter(model_path=args.model_path, n_ctx=2048, verbose=False)
+            except Exception as exc:
+                print(f"[!] Warning: Could not initialize LlamaCppAdapter for hybrid extractor ({exc}). Using documented fallback.")
+        elif args.use_fake_llm:
+            print("[*] Initializing FakeLLMAdapter for HybridCandidateExtractor.")
+            hybrid_adapter = FakeLLMAdapter()
+        else:
+            print("[!] Documented fallback: No Qwen model available at model_path. "
+                  "HybridCandidateExtractor configured with heuristic extraction fallback.")
+
+        from candidate_generation import HybridCandidateExtractor
+        candidate_extractor = HybridCandidateExtractor(
+            llm_adapter=hybrid_adapter,
+            trigger_slm_on_multi_clause=True
+        )
+
     if args.phase == 1:
         if args.input and os.path.exists(args.input):
             with open(args.input, "r", encoding="utf-8") as f:
@@ -218,6 +246,7 @@ def main():
             allocation_config=allocation_config,
             persistence_path=output_path,
             current_timestamp=time.time(),
+            candidate_extractor=candidate_extractor,
         )
 
         summary = results["allocation_summary"]
@@ -240,6 +269,7 @@ def main():
             scoring_weights=scoring_weights,
             allocation_config=allocation_config,
             persistence_path=output_path,
+            candidate_extractor=candidate_extractor,
         )
 
         if args.input and os.path.exists(args.input):
@@ -290,6 +320,7 @@ def main():
             scoring_weights=scoring_weights,
             allocation_config=allocation_config,
             persistence_path=output_path,
+            candidate_extractor=candidate_extractor,
         )
 
         print("[*] Intake multi-session conversations...")
@@ -308,7 +339,8 @@ def main():
             storage_budget=args.budget,
             max_context_tokens=args.max_context_tokens,
             existing_manager=manager,
-            current_timestamp=1700086500.0
+            current_timestamp=1700086500.0,
+            candidate_extractor=candidate_extractor,
         )
 
         print("\n" + "=" * 55)

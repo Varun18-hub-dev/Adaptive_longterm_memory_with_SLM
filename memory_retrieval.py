@@ -400,7 +400,9 @@ def run_phase3_pipeline(
     scoring_weights: Optional[ScoringWeights] = None,
     allocation_config: Optional[AllocationConfig] = None,
     existing_manager: Optional[AdaptiveMemoryManager] = None,
-    current_timestamp: Optional[float] = None
+    current_timestamp: Optional[float] = None,
+    admission_gate: Optional[Any] = None,
+    candidate_extractor: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Executes the hardened Phase 3 pipeline with native tokenizer support.
@@ -412,7 +414,9 @@ def run_phase3_pipeline(
         manager = AdaptiveMemoryManager(
             total_budget=storage_budget,
             scoring_weights=scoring_weights,
-            allocation_config=allocation_config
+            allocation_config=allocation_config,
+            admission_gate=admission_gate,
+            candidate_extractor=candidate_extractor
         )
     else:
         manager = existing_manager

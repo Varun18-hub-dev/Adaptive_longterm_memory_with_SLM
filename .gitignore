@@ -65,3 +65,8 @@ Thumbs.db
 outputs/
 logs/
 scratch/
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

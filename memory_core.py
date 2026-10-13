@@ -231,83 +231,16 @@ def extract_memories(
     """
     Extract candidate memories from a conversation history session.
     Deduplicates repeated candidates while preserving frequency and source provenance.
-
-    Args:
-        conversation_history: List of dicts, e.g. [{"role": "user", "content": "..."}]
-        session_id: Source session identifier
-        current_timestamp: Reference epoch timestamp (defaults to time.time())
-        tokenizer_fn: Optional custom token counter (defaults to estimate_token_cost)
+    Delegates to modular HeuristicCandidateExtractor.
     """
-    if current_timestamp is None:
-        current_timestamp = time.time()
-    if tokenizer_fn is None:
-        tokenizer_fn = estimate_token_cost
-
-    candidates_by_content: Dict[str, MemoryItem] = {}
-
-    for turn_idx, turn in enumerate(conversation_history):
-        content = turn.get("content", "").strip()
-        role = turn.get("role", "unknown")
-        turn_timestamp = turn.get("timestamp", current_timestamp)
-
-        if not content:
-            continue
-
-        # Split multi-sentence turns into atomic propositions / candidates
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", content) if s.strip()]
-        if not sentences:
-            sentences = [content]
-
-        for sent in sentences:
-            sent = re.sub(r"^\s*(\d+[\.\)]|\*|\-|\+|\[|\#+)\s*", "", sent).strip()
-            # Skip trivial greetings or conversational fillers
-            if not sent or _is_filler_sentence(sent):
-                continue
-
-            normalized_key = " ".join(sent.lower().split())
-
-            if normalized_key in candidates_by_content:
-                # Deduplication: update frequency, recency timestamp, and provenance
-                existing = candidates_by_content[normalized_key]
-                existing.frequency += 1
-                existing.timestamp = max(existing.timestamp, turn_timestamp)
-                existing.metadata["provenance"].append({
-                    "session_id": session_id,
-                    "turn_index": turn_idx,
-                    "role": role,
-                    "timestamp": turn_timestamp
-                })
-            else:
-                mem_type, importance, stability = _classify_candidate_heuristics(sent)
-                mem_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{session_id}:{normalized_key}"))
-                token_cost = tokenizer_fn(sent)
-
-                candidates_by_content[normalized_key] = MemoryItem(
-                    id=mem_id,
-                    content=sent,
-                    memory_type=mem_type,
-                    source_session_id=session_id,
-                    timestamp=turn_timestamp,
-                    importance=importance,
-                    recency=1.0,  # Computed fully in score_memories
-                    frequency=1,
-                    stability=stability,
-                    consistency_confidence=1.0,
-                    utility_score=0.0,
-                    token_cost=token_cost,
-                    lifecycle_status=LifecycleStatus.ACTIVE if stability < 0.8 else LifecycleStatus.STABLE,
-                    metadata={
-                        "normalized_key": normalized_key,
-                        "provenance": [{
-                            "session_id": session_id,
-                            "turn_index": turn_idx,
-                            "role": role,
-                            "timestamp": turn_timestamp
-                        }]
-                    }
-                )
-
-    return list(candidates_by_content.values())
+    from candidate_generation import HeuristicCandidateExtractor
+    extractor = HeuristicCandidateExtractor(tokenizer_fn=tokenizer_fn)
+    return extractor.extract_candidates(
+        conversation_history=conversation_history,
+        session_id=session_id,
+        current_timestamp=current_timestamp,
+        tokenizer_fn=tokenizer_fn
+    )
 
 
 # ============================================================================
@@ -550,7 +483,8 @@ def run_phase1_pipeline(
     scoring_weights: Optional[ScoringWeights] = None,
     allocation_config: Optional[AllocationConfig] = None,
     persistence_path: Optional[str] = None,
-    current_timestamp: Optional[float] = None
+    current_timestamp: Optional[float] = None,
+    candidate_extractor: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Executes the complete Phase 1 pipeline:
@@ -567,11 +501,18 @@ def run_phase1_pipeline(
         current_timestamp = time.time()
 
     # 1. Extraction
-    candidates = extract_memories(
-        conversation_history=conversation_history,
-        session_id=session_id,
-        current_timestamp=current_timestamp
-    )
+    if candidate_extractor is not None:
+        candidates = candidate_extractor.extract_candidates(
+            conversation_history=conversation_history,
+            session_id=session_id,
+            current_timestamp=current_timestamp
+        )
+    else:
+        candidates = extract_memories(
+            conversation_history=conversation_history,
+            session_id=session_id,
+            current_timestamp=current_timestamp
+        )
 
     # 2. Utility Scoring
     scored_candidates = score_memories(

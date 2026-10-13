@@ -51,6 +51,7 @@ class AuditAction(str, Enum):
     TRANSITION_STATUS = "transition_status"
     EVICT = "evict"
     MAINTAIN_BUDGET = "maintain_budget"
+    REJECT_CANDIDATE = "reject_candidate"
 
 
 @dataclass
@@ -580,17 +581,22 @@ class AdaptiveMemoryManager:
         total_budget: int = 1000,
         scoring_weights: Optional[ScoringWeights] = None,
         allocation_config: Optional[AllocationConfig] = None,
-        persistence_path: Optional[str] = None
+        persistence_path: Optional[str] = None,
+        admission_gate: Optional[Any] = None,
+        candidate_extractor: Optional[Any] = None
     ):
         self.total_budget = total_budget
         self.scoring_weights = scoring_weights or ScoringWeights()
         self.allocation_config = allocation_config or AllocationConfig(total_budget=total_budget)
         self.persistence_path = persistence_path
+        self.admission_gate = admission_gate
+        self.candidate_extractor = candidate_extractor
 
         self.episodic_store: List[MemoryItem] = []
         self.semantic_store: List[MemoryItem] = []
         self.archive_store: List[MemoryItem] = []
         self.audit_log: List[AuditLogEntry] = []
+        self.rejected_candidates: List[Tuple[MemoryItem, Any, str]] = []
 
     def process_session(
         self,
@@ -603,11 +609,18 @@ class AdaptiveMemoryManager:
             current_timestamp = time.time()
 
         # 1. Candidate Extraction
-        new_candidates = extract_memories(
-            conversation_history=conversation_history,
-            session_id=session_id,
-            current_timestamp=current_timestamp
-        )
+        if self.candidate_extractor is not None:
+            new_candidates = self.candidate_extractor.extract_candidates(
+                conversation_history=conversation_history,
+                session_id=session_id,
+                current_timestamp=current_timestamp
+            )
+        else:
+            new_candidates = extract_memories(
+                conversation_history=conversation_history,
+                session_id=session_id,
+                current_timestamp=current_timestamp
+            )
 
         # 2. Score candidates
         scored_new = score_memories(
@@ -615,6 +628,27 @@ class AdaptiveMemoryManager:
             weights=self.scoring_weights,
             current_timestamp=current_timestamp
         )
+
+        # 2b. Candidate Admission Gating (if admission_gate is provided)
+        session_rejected: List[Tuple[MemoryItem, Any, str]] = []
+        if self.admission_gate is not None:
+            if hasattr(self.admission_gate, "filter_quality"):
+                scored_new, session_rejected = self.admission_gate.filter_quality(
+                    scored_new,
+                    audit_entries=self.audit_log,
+                    current_timestamp=current_timestamp
+                )
+            elif hasattr(self.admission_gate, "evaluate_candidates"):
+                eval_res = self.admission_gate.evaluate_candidates(
+                    scored_new,
+                    existing_memories=self.episodic_store + self.semantic_store,
+                    current_timestamp=current_timestamp
+                )
+                scored_new = eval_res.admitted_candidates
+                session_rejected = eval_res.rejected_candidates
+                if eval_res.audit_entries:
+                    self.audit_log.extend(eval_res.audit_entries)
+            self.rejected_candidates.extend(session_rejected)
 
         # Partition new candidates
         new_ep = [m for m in scored_new if m.memory_type == MemoryType.EPISODIC]
@@ -692,6 +726,8 @@ class AdaptiveMemoryManager:
             "semantic_count": len(self.semantic_store),
             "archive_count": len(self.archive_store),
             "audit_log_count": len(self.audit_log),
+            "rejected_count": len(session_rejected),
+            "rejected_candidates": session_rejected,
         }
 
     def save_state(self, filepath: str, summary: Optional[Dict[str, Any]] = None) -> None:
@@ -706,6 +742,9 @@ class AdaptiveMemoryManager:
             "semantic_store": [m.to_dict() for m in self.semantic_store],
             "archive_store": [m.to_dict() for m in self.archive_store],
             "audit_log": [e.to_dict() for e in self.audit_log],
+            "rejected_candidates": [
+                (c.to_dict(), getattr(d, "value", str(d)), r) for c, d, r in self.rejected_candidates
+            ],
         }
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -730,14 +769,18 @@ def run_phase2_pipeline(
     scoring_weights: Optional[ScoringWeights] = None,
     allocation_config: Optional[AllocationConfig] = None,
     persistence_path: Optional[str] = None,
-    current_timestamp: Optional[float] = None
+    current_timestamp: Optional[float] = None,
+    admission_gate: Optional[Any] = None,
+    candidate_extractor: Optional[Any] = None
 ) -> Dict[str, Any]:
     """Clean procedural runner for Phase 2 pipeline."""
     manager = AdaptiveMemoryManager(
         total_budget=total_budget,
         scoring_weights=scoring_weights,
         allocation_config=allocation_config,
-        persistence_path=persistence_path
+        persistence_path=persistence_path,
+        admission_gate=admission_gate,
+        candidate_extractor=candidate_extractor
     )
     res = manager.process_session(
         conversation_history=conversation_history,
