@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -37,6 +37,54 @@ class BenchmarkExample:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> BenchmarkExample:
         return cls(**data)
+
+
+def validate_benchmark_example(example: BenchmarkExample) -> Tuple[bool, List[str]]:
+    """
+    Validates benchmark record schema, chronological turn ordering, and data isolation.
+    Returns:
+        (is_valid, errors_list)
+    """
+    errors: List[str] = []
+
+    if not example.id or not str(example.id).strip():
+        errors.append("Example id is missing or empty")
+
+    if not example.query or not str(example.query).strip():
+        errors.append("Example query is missing or empty")
+
+    if not example.expected_answer or not str(example.expected_answer).strip():
+        errors.append("Example expected_answer is missing or empty")
+
+    if not isinstance(example.sessions, list) or len(example.sessions) == 0:
+        errors.append("Example sessions must be a non-empty list of session turn lists")
+    else:
+        for s_idx, session in enumerate(example.sessions):
+            if not isinstance(session, list):
+                errors.append(f"Session {s_idx} is not a list")
+                continue
+            sess_last_ts = -1.0
+            for t_idx, turn in enumerate(session):
+                if not isinstance(turn, dict):
+                    errors.append(f"Session {s_idx} turn {t_idx} is not a dictionary")
+                    continue
+                content = turn.get("content", "")
+                if not content or not str(content).strip():
+                    errors.append(f"Session {s_idx} turn {t_idx} has empty content")
+                role = turn.get("role")
+                if not role or not isinstance(role, str) or role.strip().lower() not in ("user", "assistant", "system"):
+                    errors.append(f"Session {s_idx} turn {t_idx} has invalid or missing role: '{role}'")
+                ts = turn.get("timestamp")
+                if ts is not None and isinstance(ts, (int, float)):
+                    if ts < sess_last_ts:
+                        errors.append(f"Session {s_idx} turn {t_idx} timestamp {ts} out of order (previous {sess_last_ts})")
+                    sess_last_ts = ts
+                # Check data-leakage: query should not be leaked into past conversation turns
+                if content and example.query and content.strip().lower() == example.query.strip().lower():
+                    errors.append(f"Session {s_idx} turn {t_idx} leaks benchmark evaluation query")
+
+    is_valid = len(errors) == 0
+    return is_valid, errors
 
 
 # ============================================================================
@@ -223,6 +271,58 @@ def get_synthetic_benchmark_suite() -> List[BenchmarkExample]:
 # ============================================================================
 # 2. LongMemEval-S Local Benchmark Suite (Dev & Eval Splits)
 # ============================================================================
+
+def load_benchmark_dataset(
+    dataset_name: str,
+    data_dir: str = "data/longmemeval",
+    validate: bool = True
+) -> List[BenchmarkExample]:
+    """
+    Loads benchmark dataset split on demand (lazy loading).
+    Avoids loading full evaluation files when only dev split is needed.
+
+    Supported dataset names:
+    - 'synthetic': 8 controlled scenarios.
+    - 'longmemeval_dev': 30-question development split.
+    - 'longmemeval_eval': 470-question held-out evaluation split.
+    """
+    name_clean = dataset_name.lower().strip()
+    if name_clean == "synthetic":
+        examples = get_synthetic_benchmark_suite()
+    elif name_clean in ("longmemeval_dev", "dev"):
+        dev_path = os.path.join(data_dir, "longmemeval_s_dev.json")
+        if os.path.exists(dev_path):
+            with open(dev_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            examples = [BenchmarkExample.from_dict(d) for d in raw]
+        else:
+            dev_examples, _ = create_or_load_longmemeval_benchmark(data_dir=data_dir)
+            examples = dev_examples
+    elif name_clean in ("longmemeval_eval", "eval"):
+        eval_path = os.path.join(data_dir, "longmemeval_s_eval.json")
+        if os.path.exists(eval_path):
+            with open(eval_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            examples = [BenchmarkExample.from_dict(d) for d in raw]
+        else:
+            _, eval_examples = create_or_load_longmemeval_benchmark(data_dir=data_dir)
+            examples = eval_examples
+    else:
+        raise ValueError(
+            f"Unknown dataset name '{dataset_name}'. Supported: 'synthetic', 'longmemeval_dev', 'longmemeval_eval'."
+        )
+
+    if validate:
+        valid_examples = []
+        for ex in examples:
+            is_valid, errors = validate_benchmark_example(ex)
+            if not is_valid:
+                print(f"[!] Warning: benchmark example {ex.id} failed validation: {errors}")
+            valid_examples.append(ex)
+        return valid_examples
+
+    return examples
+
 
 def create_or_load_longmemeval_benchmark(
     data_dir: str = "data/longmemeval"
