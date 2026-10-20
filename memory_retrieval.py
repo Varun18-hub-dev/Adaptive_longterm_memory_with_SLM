@@ -338,32 +338,55 @@ def assemble_memory_context(
             tracker=tracker
         )
 
-    selected: List[MemoryItem] = []
+    selected: List[Any] = []
     seen_contents: Set[str] = set()
     formatted_lines: List[str] = []
 
-    for mem, rank_score in retrieved_memories:
-        norm_content = " ".join(mem.content.lower().split())
+    for item_entry in retrieved_memories:
+        if isinstance(item_entry, tuple) and len(item_entry) == 2:
+            mem, rank_score = item_entry
+        else:
+            mem, rank_score = item_entry, 1.0
+
+        content = getattr(mem, "content", None) or (mem.get("content") if isinstance(mem, dict) else str(mem))
+        content = content.strip() if content else ""
+        if not content:
+            continue
+
+        norm_content = " ".join(content.lower().split())
         if norm_content in seen_contents:
             continue
 
-        if mem.lifecycle_status == LifecycleStatus.SUPERSEDED:
+        # Strategy-neutral status handling
+        raw_status = getattr(mem, "lifecycle_status", None) or (mem.get("lifecycle_status") if isinstance(mem, dict) else None)
+        if raw_status == LifecycleStatus.SUPERSEDED or str(raw_status).lower() in ("superseded", "historical"):
             status_tag = "[HISTORICAL / SUPERSEDED]"
             extra_info = " (Replaced by newer update)"
-        elif mem.lifecycle_status in (LifecycleStatus.ACTIVE, LifecycleStatus.STABLE):
+        elif raw_status in (LifecycleStatus.ACTIVE, LifecycleStatus.STABLE) or str(raw_status).lower() in ("active", "stable", "current"):
             status_tag = "[CURRENT]"
-            preds = mem.metadata.get("historical_predecessors", [])
+            metadata = getattr(mem, "metadata", {}) or (mem.get("metadata", {}) if isinstance(mem, dict) else {})
+            preds = metadata.get("historical_predecessors", []) if isinstance(metadata, dict) else []
             extra_info = f" (Formerly: {preds[-1].get('previous_value', '')})" if preds else ""
+        elif raw_status is not None:
+            val_str = getattr(raw_status, "value", str(raw_status))
+            status_tag = f"[{val_str.upper()}]"
+            extra_info = ""
         else:
-            status_tag = f"[{mem.lifecycle_status.value.upper()}]"
+            status_tag = "[CURRENT]"
             extra_info = ""
 
-        type_tag = "Episodic" if mem.memory_type == MemoryType.EPISODIC else "Semantic"
-
-        if include_provenance:
-            line = f"- {status_tag} [{type_tag} | ID: {mem.id[:8]}] {mem.content}{extra_info}"
+        # Strategy-neutral type handling
+        raw_type = getattr(mem, "memory_type", None) or (mem.get("memory_type") if isinstance(mem, dict) else None)
+        if raw_type is not None:
+            type_tag = "Episodic" if (raw_type == MemoryType.EPISODIC or str(raw_type).lower() == "episodic") else "Semantic"
         else:
-            line = f"- {status_tag} {mem.content}{extra_info}"
+            type_tag = "Evidence"
+
+        mem_id = getattr(mem, "id", None) or (mem.get("id") if isinstance(mem, dict) else None)
+        if include_provenance and mem_id:
+            line = f"- {status_tag} [{type_tag} | ID: {str(mem_id)[:8]}] {content}{extra_info}"
+        else:
+            line = f"- {status_tag} {content}{extra_info}"
 
         tentative_context = "\n".join(formatted_lines + [line])
         tentative_cost = tokenizer_fn(tentative_context)

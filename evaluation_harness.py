@@ -196,6 +196,7 @@ class QuestionEvaluationResult:
     retrieval_latency_ms: float
     generation_latency_ms: float
     total_latency_ms: float
+    error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -226,98 +227,141 @@ class ExperimentHarness:
         """
         Runs one strategy on one benchmark example under a fixed budget constraint.
         Strictly prevents data leakage: query and answer are never present during ingestion.
+        Guarantees isolation: calls strategy.reset() before processing.
         """
-        # 1. Ingest multi-session conversation history
-        for idx, session_turns in enumerate(example.sessions):
-            session_id = f"{example.id}_sess_{idx+1}"
-            session_timestamp = session_turns[-1].get("timestamp", 1000.0) if session_turns else 1000.0
-            strategy.process_session(
-                conversation_history=session_turns,
-                session_id=session_id,
-                current_timestamp=session_timestamp
+        try:
+            # 0. Enforce clean isolation
+            if hasattr(strategy, "reset"):
+                strategy.reset()
+
+            # 1. Ingest multi-session conversation history
+            for idx, session_turns in enumerate(example.sessions):
+                session_id = f"{example.id}_sess_{idx+1}"
+                session_timestamp = session_turns[-1].get("timestamp", 1000.0) if session_turns else 1000.0
+                strategy.process_session(
+                    conversation_history=session_turns,
+                    session_id=session_id,
+                    current_timestamp=session_timestamp
+                )
+
+            storage_tokens_used = strategy.get_storage_usage()
+
+            # 2. Measure Retrieval Latency
+            t0_retrieval = time.perf_counter()
+            retrieved_raw = strategy.retrieve(query=example.query, top_k=5)
+            retrieval_latency_ms = (time.perf_counter() - t0_retrieval) * 1000.0
+
+            # Normalize retrieved items
+            retrieved_memories = []
+            retrieved_ids = []
+            retrieved_contents = []
+
+            for idx, item in enumerate(retrieved_raw):
+                mem = item[0] if (isinstance(item, tuple) and len(item) == 2) else item
+                retrieved_memories.append(mem)
+                cid = getattr(mem, "id", None) or (mem.get("id") if isinstance(mem, dict) else f"mem_{idx+1}")
+                ccontent = getattr(mem, "content", None) or (mem.get("content") if isinstance(mem, dict) else str(mem))
+                retrieved_ids.append(str(cid))
+                retrieved_contents.append(str(ccontent))
+
+            # 3. Context Assembly
+            context_res = assemble_memory_context(
+                query=example.query,
+                retrieved_memories=retrieved_raw,
+                max_context_tokens=self.max_context_tokens,
+                tokenizer_fn=getattr(self.llm_adapter, "count_tokens", heuristic_bpe_token_count)
             )
 
-        storage_tokens_used = strategy.get_storage_usage()
+            messages = [
+                {"role": "system", "content": f"{context_res.system_prompt}\n\nRELEVANT MEMORIES:\n{context_res.formatted_context}"},
+                {"role": "user", "content": example.query}
+            ]
 
-        # 2. Measure Retrieval Latency
-        t0_retrieval = time.perf_counter()
-        retrieved_tuples = strategy.retrieve(query=example.query, top_k=5)
-        retrieval_latency_ms = (time.perf_counter() - t0_retrieval) * 1000.0
+            # 4. Measure Generation Latency
+            t0_gen = time.perf_counter()
+            response = self.llm_adapter.generate_chat(
+                messages=messages,
+                max_tokens=128,
+                temperature=0.0  # Deterministic decoding for scientific evaluation
+            )
+            generation_latency_ms = (time.perf_counter() - t0_gen) * 1000.0
+            total_latency_ms = retrieval_latency_ms + generation_latency_ms
 
-        retrieved_memories = [m for m, score in retrieved_tuples]
-        retrieved_ids = [m.id for m in retrieved_memories]
-        retrieved_contents = [m.content for m in retrieved_memories]
+            # 5. Evaluate Metrics
+            ans_metrics = evaluate_answer_accuracy(
+                prediction=response,
+                expected_answer=example.expected_answer,
+                acceptable_answers=example.acceptable_answers
+            )
+            ret_metrics = evaluate_retrieval_quality(
+                retrieved_memories=retrieved_memories,
+                supporting_evidence=example.supporting_evidence
+            )
+            stale_error = check_stale_memory_error(
+                prediction=response,
+                retrieved_memories=retrieved_memories,
+                is_historical=example.is_historical
+            )
 
-        # 3. Context Assembly
-        context_res = assemble_memory_context(
-            query=example.query,
-            retrieved_memories=retrieved_tuples,
-            max_context_tokens=self.max_context_tokens,
-            tokenizer_fn=getattr(self.llm_adapter, "count_tokens", heuristic_bpe_token_count)
-        )
+            return QuestionEvaluationResult(
+                question_id=example.id,
+                category=example.category,
+                strategy_name=strategy.name,
+                budget=budget,
+                user_query=example.query,
+                expected_answer=example.expected_answer,
+                generated_response=response,
+                retrieved_memory_ids=retrieved_ids,
+                retrieved_contents=retrieved_contents,
+                exact_match=ans_metrics["exact_match"],
+                substring_accuracy=ans_metrics["substring_accuracy"],
+                token_f1=ans_metrics["token_f1"],
+                recall_at_k=ret_metrics["recall_at_k"],
+                precision_at_k=ret_metrics["precision_at_k"],
+                mrr=ret_metrics["mrr"],
+                stale_memory_error=stale_error,
+                storage_tokens_used=storage_tokens_used,
+                context_tokens_used=context_res.context_token_cost,
+                retrieval_latency_ms=round(retrieval_latency_ms, 2),
+                generation_latency_ms=round(generation_latency_ms, 2),
+                total_latency_ms=round(total_latency_ms, 2),
+                error=None
+            )
 
-        messages = [
-            {"role": "system", "content": f"{context_res.system_prompt}\n\nRELEVANT MEMORIES:\n{context_res.formatted_context}"},
-            {"role": "user", "content": example.query}
-        ]
-
-        # 4. Measure Generation Latency
-        t0_gen = time.perf_counter()
-        response = self.llm_adapter.generate_chat(
-            messages=messages,
-            max_tokens=128,
-            temperature=0.0  # Deterministic decoding for scientific evaluation
-        )
-        generation_latency_ms = (time.perf_counter() - t0_gen) * 1000.0
-
-        total_latency_ms = retrieval_latency_ms + generation_latency_ms
-
-        # 5. Evaluate Metrics
-        ans_metrics = evaluate_answer_accuracy(
-            prediction=response,
-            expected_answer=example.expected_answer,
-            acceptable_answers=example.acceptable_answers
-        )
-        ret_metrics = evaluate_retrieval_quality(
-            retrieved_memories=retrieved_memories,
-            supporting_evidence=example.supporting_evidence
-        )
-        stale_error = check_stale_memory_error(
-            prediction=response,
-            retrieved_memories=retrieved_memories,
-            is_historical=example.is_historical
-        )
-
-        return QuestionEvaluationResult(
-            question_id=example.id,
-            category=example.category,
-            strategy_name=strategy.name,
-            budget=budget,
-            user_query=example.query,
-            expected_answer=example.expected_answer,
-            generated_response=response,
-            retrieved_memory_ids=retrieved_ids,
-            retrieved_contents=retrieved_contents,
-            exact_match=ans_metrics["exact_match"],
-            substring_accuracy=ans_metrics["substring_accuracy"],
-            token_f1=ans_metrics["token_f1"],
-            recall_at_k=ret_metrics["recall_at_k"],
-            precision_at_k=ret_metrics["precision_at_k"],
-            mrr=ret_metrics["mrr"],
-            stale_memory_error=stale_error,
-            storage_tokens_used=storage_tokens_used,
-            context_tokens_used=context_res.context_token_cost,
-            retrieval_latency_ms=round(retrieval_latency_ms, 2),
-            generation_latency_ms=round(generation_latency_ms, 2),
-            total_latency_ms=round(total_latency_ms, 2),
-        )
+        except Exception as exc:
+            print(f"[!] Error evaluating question {example.id} with strategy {strategy.name}: {exc}")
+            return QuestionEvaluationResult(
+                question_id=example.id,
+                category=example.category,
+                strategy_name=strategy.name,
+                budget=budget,
+                user_query=example.query,
+                expected_answer=example.expected_answer,
+                generated_response=f"ERROR: {str(exc)}",
+                retrieved_memory_ids=[],
+                retrieved_contents=[],
+                exact_match=0.0,
+                substring_accuracy=0.0,
+                token_f1=0.0,
+                recall_at_k=0.0,
+                precision_at_k=0.0,
+                mrr=0.0,
+                stale_memory_error=0.0,
+                storage_tokens_used=0,
+                context_tokens_used=0,
+                retrieval_latency_ms=0.0,
+                generation_latency_ms=0.0,
+                total_latency_ms=0.0,
+                error=str(exc)
+            )
 
     def run_benchmark_suite(
         self,
         strategy_constructors: Dict[str, Any],
         dataset: List[BenchmarkExample],
         budgets: List[int],
-        experiment_name: str = "evaluation_run"
+        experiment_name: str = "evaluation_run",
+        metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Executes complete paired comparison across all strategies and budgets.
@@ -353,6 +397,7 @@ class ExperimentHarness:
         payload = {
             "experiment_name": experiment_name,
             "timestamp": timestamp_str,
+            "metadata": metadata or {},
             "budgets": budgets,
             "question_count": len(dataset),
             "summary": summary,
@@ -384,18 +429,22 @@ class ExperimentHarness:
             summary[strat_name] = {}
             for budget, items in budget_dict.items():
                 n = len(items)
+                failed_count = sum(1 for i in items if i.error is not None)
+                succeeded_count = sum(1 for i in items if i.error is None)
                 summary[strat_name][budget] = {
                     "count": n,
-                    "accuracy": round(sum(i.substring_accuracy for i in items) / n, 4),
-                    "exact_match": round(sum(i.exact_match for i in items) / n, 4),
-                    "token_f1": round(sum(i.token_f1 for i in items) / n, 4),
-                    "recall_at_k": round(sum(i.recall_at_k for i in items) / n, 4),
-                    "precision_at_k": round(sum(i.precision_at_k for i in items) / n, 4),
-                    "mrr": round(sum(i.mrr for i in items) / n, 4),
-                    "stale_memory_error_rate": round(sum(i.stale_memory_error for i in items) / n, 4),
-                    "avg_storage_tokens": round(sum(i.storage_tokens_used for i in items) / n, 1),
-                    "avg_context_tokens": round(sum(i.context_tokens_used for i in items) / n, 1),
-                    "avg_latency_ms": round(sum(i.total_latency_ms for i in items) / n, 1),
+                    "succeeded_count": succeeded_count,
+                    "failed_count": failed_count,
+                    "accuracy": round(sum(i.substring_accuracy for i in items) / n, 4) if n else 0.0,
+                    "exact_match": round(sum(i.exact_match for i in items) / n, 4) if n else 0.0,
+                    "token_f1": round(sum(i.token_f1 for i in items) / n, 4) if n else 0.0,
+                    "recall_at_k": round(sum(i.recall_at_k for i in items) / n, 4) if n else 0.0,
+                    "precision_at_k": round(sum(i.precision_at_k for i in items) / n, 4) if n else 0.0,
+                    "mrr": round(sum(i.mrr for i in items) / n, 4) if n else 0.0,
+                    "stale_memory_error_rate": round(sum(i.stale_memory_error for i in items) / n, 4) if n else 0.0,
+                    "avg_storage_tokens": round(sum(i.storage_tokens_used for i in items) / n, 1) if n else 0.0,
+                    "avg_context_tokens": round(sum(i.context_tokens_used for i in items) / n, 1) if n else 0.0,
+                    "avg_latency_ms": round(sum(i.total_latency_ms for i in items) / n, 1) if n else 0.0,
                 }
 
                 cat_breakdown: Dict[str, List[QuestionEvaluationResult]] = collections.defaultdict(list)

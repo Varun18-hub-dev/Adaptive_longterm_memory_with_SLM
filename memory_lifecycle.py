@@ -162,6 +162,10 @@ def deduplicate_semantically(
             incoming_prov = incoming.metadata.get("provenance", [])
             existing_prov.extend(incoming_prov)
 
+            # If a temporary memory is reinforced, reactivate it
+            if matched_existing.lifecycle_status == LifecycleStatus.TEMPORARY:
+                matched_existing.lifecycle_status = LifecycleStatus.ACTIVE
+
             # Audit log
             audit_entries.append(AuditLogEntry(
                 id=str(uuid.uuid4()),
@@ -327,7 +331,7 @@ def consolidate_episodic_memories(
             ep_mem.metadata.get("slot_type") is not None
         )
 
-        if is_candidate_for_consolidation and ep_mem.lifecycle_status == LifecycleStatus.ACTIVE:
+        if is_candidate_for_consolidation and ep_mem.lifecycle_status in (LifecycleStatus.ACTIVE, LifecycleStatus.TEMPORARY):
             # Check if an existing semantic memory already covers this
             existing_sem = next(
                 (sm for sm in new_semantic if compute_text_similarity(sm.content, ep_mem.content) >= 0.75),
@@ -395,8 +399,12 @@ def consolidate_episodic_memories(
                     metadata={"consolidated_id": consolidated_id}
                 ))
 
-            # Mark episodic observation as consolidated
+            # Mark episodic observation as consolidated and superseded by semantic representation
+            target_sem_id = existing_sem.id if existing_sem else consolidated_id
             ep_mem.metadata["consolidated"] = True
+            ep_mem.lifecycle_status = LifecycleStatus.SUPERSEDED
+            ep_mem.metadata["superseded_by_id"] = target_sem_id
+            ep_mem.metadata["superseded_at"] = current_timestamp
             remaining_episodic.append(ep_mem)
         else:
             remaining_episodic.append(ep_mem)
@@ -583,7 +591,9 @@ class AdaptiveMemoryManager:
         allocation_config: Optional[AllocationConfig] = None,
         persistence_path: Optional[str] = None,
         admission_gate: Optional[Any] = None,
-        candidate_extractor: Optional[Any] = None
+        candidate_extractor: Optional[Any] = None,
+        tokenizer_fn: Optional[Any] = None,
+        enable_consolidation: bool = True
     ):
         self.total_budget = total_budget
         self.scoring_weights = scoring_weights or ScoringWeights()
@@ -591,6 +601,8 @@ class AdaptiveMemoryManager:
         self.persistence_path = persistence_path
         self.admission_gate = admission_gate
         self.candidate_extractor = candidate_extractor
+        self.tokenizer_fn = tokenizer_fn
+        self.enable_consolidation = enable_consolidation
 
         self.episodic_store: List[MemoryItem] = []
         self.semantic_store: List[MemoryItem] = []
@@ -613,13 +625,15 @@ class AdaptiveMemoryManager:
             new_candidates = self.candidate_extractor.extract_candidates(
                 conversation_history=conversation_history,
                 session_id=session_id,
-                current_timestamp=current_timestamp
+                current_timestamp=current_timestamp,
+                tokenizer_fn=self.tokenizer_fn
             )
         else:
             new_candidates = extract_memories(
                 conversation_history=conversation_history,
                 session_id=session_id,
-                current_timestamp=current_timestamp
+                current_timestamp=current_timestamp,
+                tokenizer_fn=self.tokenizer_fn
             )
 
         # 2. Score candidates
@@ -680,12 +694,13 @@ class AdaptiveMemoryManager:
         )
 
         # 5. Consolidation of repeated episodic observations into semantic store
-        self.episodic_store, self.semantic_store = consolidate_episodic_memories(
-            episodic_memories=self.episodic_store,
-            semantic_memories=self.semantic_store,
-            audit_entries=self.audit_log,
-            current_timestamp=current_timestamp
-        )
+        if self.enable_consolidation:
+            self.episodic_store, self.semantic_store = consolidate_episodic_memories(
+                episodic_memories=self.episodic_store,
+                semantic_memories=self.semantic_store,
+                audit_entries=self.audit_log,
+                current_timestamp=current_timestamp
+            )
 
         # 6. Re-score all memories with updated recency and frequencies
         self.episodic_store = score_memories(self.episodic_store, self.scoring_weights, current_timestamp)

@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from memory_core import (
     AllocationConfig,
@@ -40,6 +40,15 @@ from memory_lifecycle import (
     detect_conflicts_and_supersede,
     evaluate_lifecycle_transitions,
 )
+from memory_interface import (
+    BaseMemoryStrategy,
+    RetrievedEvidence,
+    STRATEGY_REGISTRY,
+    register_strategy,
+    get_strategy,
+    list_registered_strategies,
+    MockMemoryStrategy,
+)
 from memory_retrieval import (
     RetrievalWeights,
     assemble_memory_context,
@@ -47,59 +56,47 @@ from memory_retrieval import (
 )
 
 
-class BaseMemoryStrategy(ABC):
-    """Common interface ensuring identical evaluation, retrieval, and accounting across all strategies."""
-
-    def __init__(self, name: str, total_budget: int):
-        self.name = name
-        self.total_budget = total_budget
-
-    @abstractmethod
-    def process_session(
-        self,
-        conversation_history: List[Dict[str, Any]],
-        session_id: str,
-        current_timestamp: float
-    ) -> Dict[str, Any]:
-        """Ingest a conversation session and maintain persistent storage under total_budget."""
-        pass
-
-    @abstractmethod
-    def retrieve(self, query: str, top_k: int = 5) -> List[Tuple[MemoryItem, float]]:
-        """Retrieve relevant memories for query."""
-        pass
-
-    @abstractmethod
-    def get_persisted_memories(self) -> List[MemoryItem]:
-        """Return all memories currently consuming persistent storage."""
-        pass
-
-    def get_storage_usage(self) -> int:
-        """Return total tokens consumed by persistent memories."""
-        return sum(m.token_cost for m in self.get_persisted_memories())
-
-
 # ============================================================================
 # 1. Flat Memory Baseline
 # ============================================================================
 
+@register_strategy("flat_memory")
+@register_strategy("flat_memory_baseline")
 class FlatMemoryBaseline(BaseMemoryStrategy):
     """
     Undivided memory baseline:
     - All memories live in a single flat pool without separate episodic or semantic stores.
     - No hierarchical budget allocator.
     - Pruning under budget selects top utility-density items across the entire undivided pool.
+    - Uses identical candidate extraction, quality gating, and tokenizer accounting as hierarchical strategies.
     """
 
     def __init__(
         self,
         total_budget: int = 150,
-        scoring_weights: Optional[ScoringWeights] = None
+        scoring_weights: Optional[ScoringWeights] = None,
+        admission_gate: Optional[Any] = None,
+        candidate_extractor: Optional[Any] = None,
+        tokenizer_fn: Optional[Callable[[str], int]] = None
     ):
-        super().__init__(name="flat_memory_baseline", total_budget=total_budget)
+        super().__init__(
+            name="flat_memory_baseline",
+            total_budget=total_budget,
+            admission_gate=admission_gate,
+            candidate_extractor=candidate_extractor,
+            tokenizer_fn=tokenizer_fn
+        )
         self.scoring_weights = scoring_weights or ScoringWeights()
         self.memory_store: List[MemoryItem] = []
         self.archive_store: List[MemoryItem] = []
+        self.audit_log: List[AuditLogEntry] = []
+        self.rejected_candidates: List[Tuple[MemoryItem, Any, str]] = []
+
+    def reset(self) -> None:
+        self.memory_store.clear()
+        self.archive_store.clear()
+        self.audit_log.clear()
+        self.rejected_candidates.clear()
 
     def process_session(
         self,
@@ -107,11 +104,20 @@ class FlatMemoryBaseline(BaseMemoryStrategy):
         session_id: str,
         current_timestamp: float
     ) -> Dict[str, Any]:
-        new_candidates = extract_memories(
-            conversation_history=conversation_history,
-            session_id=session_id,
-            current_timestamp=current_timestamp
-        )
+        if self.candidate_extractor is not None:
+            new_candidates = self.candidate_extractor.extract_candidates(
+                conversation_history=conversation_history,
+                session_id=session_id,
+                current_timestamp=current_timestamp,
+                tokenizer_fn=self.tokenizer_fn
+            )
+        else:
+            new_candidates = extract_memories(
+                conversation_history=conversation_history,
+                session_id=session_id,
+                current_timestamp=current_timestamp,
+                tokenizer_fn=self.tokenizer_fn
+            )
 
         scored_candidates = score_memories(
             memories=new_candidates,
@@ -119,18 +125,40 @@ class FlatMemoryBaseline(BaseMemoryStrategy):
             current_timestamp=current_timestamp
         )
 
+        # Candidate Admission Gate (quality & confidence filtering)
+        session_rejected: List[Tuple[MemoryItem, Any, str]] = []
+        if self.admission_gate is not None:
+            if hasattr(self.admission_gate, "filter_quality"):
+                scored_candidates, session_rejected = self.admission_gate.filter_quality(
+                    scored_candidates,
+                    audit_entries=self.audit_log,
+                    current_timestamp=current_timestamp
+                )
+            elif hasattr(self.admission_gate, "evaluate_candidates"):
+                eval_res = self.admission_gate.evaluate_candidates(
+                    scored_candidates,
+                    existing_memories=self.memory_store,
+                    current_timestamp=current_timestamp
+                )
+                scored_candidates = eval_res.admitted_candidates
+                session_rejected = eval_res.rejected_candidates
+                if eval_res.audit_entries:
+                    self.audit_log.extend(eval_res.audit_entries)
+            self.rejected_candidates.extend(session_rejected)
+
         # Soft deduplication against existing flat pool
         self.memory_store, distinct = deduplicate_semantically(
             incoming_memories=scored_candidates,
             existing_memories=self.memory_store,
+            audit_entries=self.audit_log,
             current_timestamp=current_timestamp
         )
         self.memory_store.extend(distinct)
 
         # Conflict resolution and lifecycle
-        detect_conflicts_and_supersede(self.memory_store, current_timestamp=current_timestamp)
+        detect_conflicts_and_supersede(self.memory_store, audit_entries=self.audit_log, current_timestamp=current_timestamp)
         self.memory_store = score_memories(self.memory_store, self.scoring_weights, current_timestamp)
-        self.memory_store = evaluate_lifecycle_transitions(self.memory_store, current_timestamp=current_timestamp)
+        self.memory_store = evaluate_lifecycle_transitions(self.memory_store, current_timestamp=current_timestamp, audit_entries=self.audit_log)
 
         # Filter expired or superseded into archive
         active_items = []
@@ -188,11 +216,20 @@ class FixedHierarchicalStrategy(BaseMemoryStrategy):
         self,
         total_budget: int = 150,
         episodic_share: float = 0.50,
-        scoring_weights: Optional[ScoringWeights] = None
+        scoring_weights: Optional[ScoringWeights] = None,
+        admission_gate: Optional[Any] = None,
+        candidate_extractor: Optional[Any] = None,
+        tokenizer_fn: Optional[Callable[[str], int]] = None
     ):
         semantic_share = round(1.0 - episodic_share, 2)
         name = f"fixed_{int(episodic_share*100)}_{int(semantic_share*100)}"
-        super().__init__(name=name, total_budget=total_budget)
+        super().__init__(
+            name=name,
+            total_budget=total_budget,
+            admission_gate=admission_gate,
+            candidate_extractor=candidate_extractor,
+            tokenizer_fn=tokenizer_fn
+        )
         self.episodic_share = episodic_share
         self.semantic_share = semantic_share
         self.scoring_weights = scoring_weights or ScoringWeights()
@@ -212,8 +249,18 @@ class FixedHierarchicalStrategy(BaseMemoryStrategy):
         self.manager = AdaptiveMemoryManager(
             total_budget=total_budget,
             scoring_weights=self.scoring_weights,
-            allocation_config=self.config
+            allocation_config=self.config,
+            admission_gate=admission_gate,
+            candidate_extractor=candidate_extractor,
+            tokenizer_fn=tokenizer_fn
         )
+
+    def reset(self) -> None:
+        self.manager.episodic_store.clear()
+        self.manager.semantic_store.clear()
+        self.manager.archive_store.clear()
+        self.manager.audit_log.clear()
+        self.manager.rejected_candidates.clear()
 
     def process_session(
         self,
@@ -242,10 +289,26 @@ class FixedHierarchicalStrategy(BaseMemoryStrategy):
         return list(self.manager.episodic_store) + list(self.manager.semantic_store)
 
 
+@register_strategy("fixed_70_30")
+def create_fixed_70_30(total_budget: int = 500, **kwargs: Any) -> FixedHierarchicalStrategy:
+    return FixedHierarchicalStrategy(total_budget=total_budget, episodic_share=0.70, **kwargs)
+
+
+@register_strategy("fixed_50_50")
+def create_fixed_50_50(total_budget: int = 500, **kwargs: Any) -> FixedHierarchicalStrategy:
+    return FixedHierarchicalStrategy(total_budget=total_budget, episodic_share=0.50, **kwargs)
+
+
+@register_strategy("fixed_30_70")
+def create_fixed_30_70(total_budget: int = 500, **kwargs: Any) -> FixedHierarchicalStrategy:
+    return FixedHierarchicalStrategy(total_budget=total_budget, episodic_share=0.30, **kwargs)
+
+
 # ============================================================================
 # 3. Adaptive Hierarchical Allocation Strategy
 # ============================================================================
 
+@register_strategy("adaptive_hierarchical")
 class AdaptiveHierarchicalStrategy(BaseMemoryStrategy):
     """
     Adaptive hierarchical memory strategy:
@@ -260,9 +323,18 @@ class AdaptiveHierarchicalStrategy(BaseMemoryStrategy):
         total_budget: int = 150,
         min_episodic_share: float = 0.20,
         max_episodic_share: float = 0.80,
-        scoring_weights: Optional[ScoringWeights] = None
+        scoring_weights: Optional[ScoringWeights] = None,
+        admission_gate: Optional[Any] = None,
+        candidate_extractor: Optional[Any] = None,
+        tokenizer_fn: Optional[Callable[[str], int]] = None
     ):
-        super().__init__(name="adaptive_hierarchical", total_budget=total_budget)
+        super().__init__(
+            name="adaptive_hierarchical",
+            total_budget=total_budget,
+            admission_gate=admission_gate,
+            candidate_extractor=candidate_extractor,
+            tokenizer_fn=tokenizer_fn
+        )
         self.scoring_weights = scoring_weights or ScoringWeights()
         self.config = AllocationConfig(
             total_budget=total_budget,
@@ -274,8 +346,18 @@ class AdaptiveHierarchicalStrategy(BaseMemoryStrategy):
         self.manager = AdaptiveMemoryManager(
             total_budget=total_budget,
             scoring_weights=self.scoring_weights,
-            allocation_config=self.config
+            allocation_config=self.config,
+            admission_gate=admission_gate,
+            candidate_extractor=candidate_extractor,
+            tokenizer_fn=tokenizer_fn
         )
+
+    def reset(self) -> None:
+        self.manager.episodic_store.clear()
+        self.manager.semantic_store.clear()
+        self.manager.archive_store.clear()
+        self.manager.audit_log.clear()
+        self.manager.rejected_candidates.clear()
 
     def process_session(
         self,
@@ -327,6 +409,9 @@ class AblatedMemoryStrategy(BaseMemoryStrategy):
         disable_consolidation: bool = False,
         disable_temporal_validity: bool = False,
         disable_reranking: bool = False,
+        admission_gate: Optional[Any] = None,
+        candidate_extractor: Optional[Any] = None,
+        tokenizer_fn: Optional[Callable[[str], int]] = None
     ):
         ablation_name_parts = []
         if disable_adaptive:
@@ -341,7 +426,13 @@ class AblatedMemoryStrategy(BaseMemoryStrategy):
             ablation_name_parts.append("no_reranking")
 
         name = "ablation_" + ("_".join(ablation_name_parts) if ablation_name_parts else "none")
-        super().__init__(name=name, total_budget=total_budget)
+        super().__init__(
+            name=name,
+            total_budget=total_budget,
+            admission_gate=admission_gate,
+            candidate_extractor=candidate_extractor,
+            tokenizer_fn=tokenizer_fn
+        )
 
         self.disable_adaptive = disable_adaptive
         self.disable_utility = disable_utility
@@ -361,8 +452,19 @@ class AblatedMemoryStrategy(BaseMemoryStrategy):
         )
         self.manager = AdaptiveMemoryManager(
             total_budget=total_budget,
-            allocation_config=self.config
+            allocation_config=self.config,
+            admission_gate=admission_gate,
+            candidate_extractor=candidate_extractor,
+            tokenizer_fn=tokenizer_fn,
+            enable_consolidation=not disable_consolidation
         )
+
+    def reset(self) -> None:
+        self.manager.episodic_store.clear()
+        self.manager.semantic_store.clear()
+        self.manager.archive_store.clear()
+        self.manager.audit_log.clear()
+        self.manager.rejected_candidates.clear()
 
     def process_session(
         self,
@@ -414,3 +516,23 @@ class AblatedMemoryStrategy(BaseMemoryStrategy):
 
     def get_persisted_memories(self) -> List[MemoryItem]:
         return list(self.manager.episodic_store) + list(self.manager.semantic_store)
+
+
+@register_strategy("ablation_no_adaptive")
+def create_ablation_no_adaptive(total_budget: int = 500, **kwargs: Any) -> AblatedMemoryStrategy:
+    return AblatedMemoryStrategy(total_budget=total_budget, disable_adaptive=True, **kwargs)
+
+
+@register_strategy("ablation_no_utility")
+def create_ablation_no_utility(total_budget: int = 500, **kwargs: Any) -> AblatedMemoryStrategy:
+    return AblatedMemoryStrategy(total_budget=total_budget, disable_utility=True, **kwargs)
+
+
+@register_strategy("ablation_no_consolidation")
+def create_ablation_no_consolidation(total_budget: int = 500, **kwargs: Any) -> AblatedMemoryStrategy:
+    return AblatedMemoryStrategy(total_budget=total_budget, disable_consolidation=True, **kwargs)
+
+
+@register_strategy("ablation_no_temporal_validity")
+def create_ablation_no_temporal_validity(total_budget: int = 500, **kwargs: Any) -> AblatedMemoryStrategy:
+    return AblatedMemoryStrategy(total_budget=total_budget, disable_temporal_validity=True, **kwargs)

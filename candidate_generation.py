@@ -201,6 +201,33 @@ class HeuristicCandidateExtractor(BaseCandidateExtractor):
     def __init__(self, tokenizer_fn: Optional[Callable[[str], int]] = None):
         self.tokenizer_fn = tokenizer_fn or estimate_token_cost
 
+    @staticmethod
+    def _is_admissible_assistant_turn(text: str) -> bool:
+        """
+        Policy for assistant turns:
+        Generic assistant advice, code explanations, pleasantries, and commentary
+        must never pollute personal memory stores.
+        Assistant turns are only admitted if they contain an identifiable entity-attribute fact slot
+        or an explicit user-referential fact assertion (e.g. 'You work at DeepMind', 'Your dog's name is Luna').
+        """
+        # 1. Check if it matches a structured entity-attribute fact slot
+        if extract_fact_slot(text) is not None:
+            return True
+
+        text_lower = text.lower()
+        # 2. Check for explicit user-referential assertion
+        user_ref = re.search(r"\b(you|your|user)\b", text_lower)
+        if user_ref:
+            user_fact_predicates = [
+                r"\b(work at|live in|moved to|prefer|like|use|own|drive|joined|graduated from)\b",
+                r"\b(name is|dog is|cat is|pet is|car is|job is|employer is|title is)\b",
+                r"\b(favorite|preference|degree|budget|hometown)\b"
+            ]
+            if any(re.search(pat, text_lower) for pat in user_fact_predicates):
+                return True
+
+        return False
+
     def _classify_candidate(self, text: str) -> Tuple[MemoryType, float, float, float, LifecycleStatus, Dict[str, Any]]:
         text_lower = text.lower()
         meta: Dict[str, Any] = {}
@@ -295,6 +322,10 @@ class HeuristicCandidateExtractor(BaseCandidateExtractor):
             for prop in atomic_propositions:
                 prop_clean = prop.strip()
                 if not prop_clean or is_filler_sentence(prop_clean):
+                    continue
+
+                # Policy: Assistant turns must contain identifiable user facts or attributes
+                if role == "assistant" and not self._is_admissible_assistant_turn(prop_clean):
                     continue
 
                 normalized_key = " ".join(prop_clean.lower().split())

@@ -35,6 +35,9 @@ def heuristic_bpe_token_count(text: str) -> int:
 class BaseLLMAdapter(ABC):
     """Abstract interface for LLM response generation and exact token accounting."""
 
+    name: str = "base"
+    is_native_tokenizer: bool = False
+
     @abstractmethod
     def generate(
         self,
@@ -84,6 +87,9 @@ class FakeLLMAdapter(BaseLLMAdapter):
     Mock LLM adapter for automated unit testing.
     Does not load any weights or require external libraries.
     """
+
+    name: str = "fake"
+    is_native_tokenizer: bool = False
 
     def __init__(
         self,
@@ -147,6 +153,9 @@ class LlamaCppAdapter(BaseLLMAdapter):
     Model path is dynamically configured via constructor or environment variable QWEN_MODEL_PATH.
     Never hardcodes machine-specific paths.
     """
+
+    name: str = "qwen"
+    is_native_tokenizer: bool = True
 
     def __init__(
         self,
@@ -219,3 +228,43 @@ class LlamaCppAdapter(BaseLLMAdapter):
             **kwargs
         )
         return response["choices"][0]["message"]["content"].strip()
+
+
+def get_model_adapter(
+    model_name: str = "fake",
+    model_path: Optional[str] = None,
+    n_ctx: int = 2048,
+    temperature: float = 0.7,
+    verbose: bool = False,
+    **kwargs: Any
+) -> BaseLLMAdapter:
+    """
+    Factory to initialize a validated model adapter.
+    Guarantees:
+    - Explicit backend selection: 'fake' or 'qwen'.
+    - Never silently substitutes FakeLLMAdapter when 'qwen' is requested.
+    - Explicitly validates model file existence and raises actionable errors.
+    """
+    choice = model_name.lower().strip()
+    if choice == "fake":
+        return FakeLLMAdapter(**kwargs)
+    elif choice in ("qwen", "llamacpp", "local"):
+        resolved_path = model_path or os.environ.get("QWEN_MODEL_PATH")
+        if not resolved_path:
+            raise ValueError(
+                "Qwen model path not specified. Please provide --model-path or set the QWEN_MODEL_PATH environment variable."
+            )
+        if not os.path.exists(resolved_path):
+            raise FileNotFoundError(
+                f"Configured Qwen GGUF model file not found at: '{resolved_path}'. "
+                f"Please ensure the file exists or check path."
+            )
+        return LlamaCppAdapter(
+            model_path=resolved_path,
+            n_ctx=n_ctx,
+            temperature=temperature,
+            verbose=verbose,
+            **kwargs
+        )
+    else:
+        raise ValueError(f"Unsupported model backend '{model_name}'. Choose 'fake' or 'qwen'.")

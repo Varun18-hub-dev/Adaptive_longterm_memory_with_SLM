@@ -19,18 +19,29 @@ import time
 from benchmark_dataset import (
     create_or_load_longmemeval_benchmark,
     get_synthetic_benchmark_suite,
+    load_benchmark_dataset,
 )
+from candidate_generation import CandidateAdmissionGate
 from evaluation_harness import ExperimentHarness
+from memory_interface import (
+    auto_discover_strategies,
+    get_strategy,
+    list_registered_strategies,
+    load_strategy_module,
+)
 from memory_strategies import (
     AblatedMemoryStrategy,
     AdaptiveHierarchicalStrategy,
     FixedHierarchicalStrategy,
     FlatMemoryBaseline,
+    MockMemoryStrategy,
 )
 from model_adapter import (
     BaseLLMAdapter,
     FakeLLMAdapter,
     LlamaCppAdapter,
+    get_model_adapter,
+    heuristic_bpe_token_count,
 )
 
 
@@ -62,8 +73,8 @@ def parse_args():
     parser.add_argument(
         "--model-path",
         type=str,
-        default=os.environ.get("QWEN_MODEL_PATH", r"C:\Users\Varun S\.ollama\models\blobs\sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6"),
-        help="Path to local Qwen GGUF model file.",
+        default=os.environ.get("QWEN_MODEL_PATH"),
+        help="Path to local Qwen GGUF model file (can also be set via QWEN_MODEL_PATH).",
     )
     parser.add_argument(
         "--max-context-tokens",
@@ -87,6 +98,29 @@ def parse_args():
         type=int,
         default=None,
         help="Maximum number of dataset examples to evaluate (default: evaluate full dataset split).",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="all",
+        help="Specific memory strategy to evaluate (default: 'all' runs comparative suite).",
+    )
+    parser.add_argument(
+        "--strategy-module",
+        type=str,
+        default=None,
+        help="Path to external Python file or module containing custom @register_strategy implementation.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility (default: 42).",
+    )
+    parser.add_argument(
+        "--list-strategies",
+        action="store_true",
+        help="List all registered memory strategies and exit.",
     )
     return parser.parse_args()
 
@@ -125,26 +159,35 @@ def format_markdown_table(summary: dict, budgets: list) -> str:
 def main():
     args = parse_args()
 
-    # 1. Initialize Model Adapter
-    if args.model == "fake":
-        print("[*] Using FakeLLMAdapter (deterministic, fast automated evaluation).")
-        llm_adapter: BaseLLMAdapter = FakeLLMAdapter()
-    else:
-        print(f"[*] Loading local Qwen GGUF model: {args.model_path}")
-        llm_adapter = LlamaCppAdapter(model_path=args.model_path, n_ctx=2048, verbose=False)
+    # 0. Strategy Discovery: auto-scan workspace and load external strategy module if provided
+    auto_discover_strategies()
+    if args.strategy_module:
+        load_strategy_module(args.strategy_module)
+        print(f"[*] Loaded external strategy module: {args.strategy_module}")
 
-    # 2. Load Dataset
-    if args.dataset == "synthetic":
-        dataset = get_synthetic_benchmark_suite()
-        exp_name = "synthetic_comparison"
-    elif args.dataset == "longmemeval_dev":
-        dev_data, _ = create_or_load_longmemeval_benchmark()
-        dataset = dev_data
-        exp_name = "longmemeval_dev_comparison"
-    else:
-        _, eval_data = create_or_load_longmemeval_benchmark()
-        dataset = eval_data
-        exp_name = "longmemeval_eval_comparison"
+    if args.list_strategies:
+        print("[*] Available registered memory strategies:")
+        for s in list_registered_strategies():
+            print(f"  - {s}")
+        print("  - all (evaluates all comparative strategies)")
+        return
+
+    # Seed for reproducibility
+    import random
+    random.seed(args.seed)
+
+    # 1. Initialize Model Adapter
+    llm_adapter = get_model_adapter(
+        model_name=args.model,
+        model_path=args.model_path,
+        n_ctx=2048,
+        verbose=False
+    )
+    print(f"[*] Initialized model adapter '{llm_adapter.name}' (native tokenizer: {llm_adapter.is_native_tokenizer})")
+
+    # 2. Load Dataset (lazy split loading)
+    dataset = load_benchmark_dataset(dataset_name=args.dataset)
+    exp_name = f"{args.dataset}_eval"
 
     if args.limit is not None and args.limit > 0:
         dataset = dataset[:args.limit]
@@ -152,23 +195,38 @@ def main():
 
     print(f"[*] Loaded dataset '{args.dataset}' evaluating exactly {len(dataset)} examples.")
 
-    # 3. Strategy Suite Setup
-    strategy_constructors = {
-        "flat_memory": lambda budget: FlatMemoryBaseline(total_budget=budget),
-        "fixed_70_30": lambda budget: FixedHierarchicalStrategy(total_budget=budget, episodic_share=0.70),
-        "fixed_50_50": lambda budget: FixedHierarchicalStrategy(total_budget=budget, episodic_share=0.50),
-        "fixed_30_70": lambda budget: FixedHierarchicalStrategy(total_budget=budget, episodic_share=0.30),
-        "adaptive_hierarchical": lambda budget: AdaptiveHierarchicalStrategy(total_budget=budget),
+    # 3. Strategy Suite Setup (with uniform admission gating and tokenizer accounting)
+    gate = CandidateAdmissionGate()
+    tokenizer_fn = getattr(llm_adapter, "count_tokens", heuristic_bpe_token_count)
+
+    core_strategies = {
+        "flat_memory": lambda budget: FlatMemoryBaseline(total_budget=budget, admission_gate=gate, tokenizer_fn=tokenizer_fn),
+        "fixed_70_30": lambda budget: FixedHierarchicalStrategy(total_budget=budget, episodic_share=0.70, admission_gate=gate, tokenizer_fn=tokenizer_fn),
+        "fixed_50_50": lambda budget: FixedHierarchicalStrategy(total_budget=budget, episodic_share=0.50, admission_gate=gate, tokenizer_fn=tokenizer_fn),
+        "fixed_30_70": lambda budget: FixedHierarchicalStrategy(total_budget=budget, episodic_share=0.30, admission_gate=gate, tokenizer_fn=tokenizer_fn),
+        "adaptive_hierarchical": lambda budget: AdaptiveHierarchicalStrategy(total_budget=budget, admission_gate=gate, tokenizer_fn=tokenizer_fn),
     }
 
-    if args.ablation:
-        print("[*] Adding ablation strategies to suite...")
-        strategy_constructors.update({
-            "ablation_no_adaptive": lambda budget: AblatedMemoryStrategy(total_budget=budget, disable_adaptive=True),
-            "ablation_no_utility": lambda budget: AblatedMemoryStrategy(total_budget=budget, disable_utility=True),
-            "ablation_no_consolidation": lambda budget: AblatedMemoryStrategy(total_budget=budget, disable_consolidation=True),
-            "ablation_no_temporal_validity": lambda budget: AblatedMemoryStrategy(total_budget=budget, disable_temporal_validity=True),
-        })
+    if args.strategy == "all":
+        strategy_constructors = dict(core_strategies)
+        if args.ablation:
+            print("[*] Adding ablation strategies to suite...")
+            strategy_constructors.update({
+                "ablation_no_adaptive": lambda budget: AblatedMemoryStrategy(total_budget=budget, disable_adaptive=True, admission_gate=gate, tokenizer_fn=tokenizer_fn),
+                "ablation_no_utility": lambda budget: AblatedMemoryStrategy(total_budget=budget, disable_utility=True, admission_gate=gate, tokenizer_fn=tokenizer_fn),
+                "ablation_no_consolidation": lambda budget: AblatedMemoryStrategy(total_budget=budget, disable_consolidation=True, admission_gate=gate, tokenizer_fn=tokenizer_fn),
+                "ablation_no_temporal_validity": lambda budget: AblatedMemoryStrategy(total_budget=budget, disable_temporal_validity=True, admission_gate=gate, tokenizer_fn=tokenizer_fn),
+            })
+    elif args.strategy in core_strategies:
+        strategy_constructors = {args.strategy: core_strategies[args.strategy]}
+    else:
+        # Resolve custom registered strategy from registry
+        strat_name = args.strategy
+        strategy_constructors = {
+            strat_name: lambda budget: get_strategy(strat_name, budget=budget, tokenizer_fn=tokenizer_fn, admission_gate=gate)
+        }
+
+    print(f"[*] Active strategies to evaluate: {list(strategy_constructors.keys())}")
 
     # 4. Execute Experiment
     harness = ExperimentHarness(
@@ -177,12 +235,23 @@ def main():
         output_dir=args.output_dir
     )
 
+    metadata = {
+        "seed": args.seed,
+        "dataset": args.dataset,
+        "model": llm_adapter.name,
+        "is_native_tokenizer": llm_adapter.is_native_tokenizer,
+        "max_context_tokens": args.max_context_tokens,
+        "strategy": args.strategy,
+        "strategy_module": args.strategy_module,
+    }
+
     t0 = time.time()
     payload = harness.run_benchmark_suite(
         strategy_constructors=strategy_constructors,
         dataset=dataset,
         budgets=args.budgets,
-        experiment_name=exp_name
+        experiment_name=exp_name,
+        metadata=metadata
     )
     elapsed = time.time() - t0
 
