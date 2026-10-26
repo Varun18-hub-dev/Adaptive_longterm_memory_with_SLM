@@ -314,8 +314,9 @@ def assemble_memory_context(
         "IMPORTANT TEMPORARY & TEMPORAL INSTRUCTIONS:\n"
         "- Facts marked [CURRENT] represent the user's current situation or preferences.\n"
         "- Facts marked [HISTORICAL / SUPERSEDED] represent past information that has changed.\n"
-        "- When the user asks about their current state, rely only on [CURRENT] facts.\n"
-        "- When the user asks about past or previous states, explain what changed based on [HISTORICAL] facts."
+        "- For current-state questions, prioritize facts that describe the current state.\n"
+        "- For past or previous-state questions, use evidence describing the requested past event, even if it is tagged [CURRENT]. Lifecycle tags indicate memory status and may not match the time described in the content.\n"
+        "- Answer directly and concisely using the retrieved evidence. Do not invent missing details. If the evidence does not answer the question, say you cannot determine it from the available memories."
     )
 
     tracker = PromptBudgetTracker(
