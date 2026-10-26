@@ -37,9 +37,9 @@ from model_adapter import BaseLLMAdapter, heuristic_bpe_token_count
 # 1. Metric Calculations
 # ============================================================================
 
-def normalize_text(text: str) -> str:
-    """Lowercases, removes punctuation and redundant whitespace."""
-    text = text.lower()
+def normalize_text(text: Any) -> str:
+    """Normalize strings and numeric answers safely."""
+    text = str(text).lower()
     text = re.sub(r"[^\w\s]", " ", text)
     return " ".join(text.split())
 
@@ -110,7 +110,12 @@ def evaluate_retrieval_quality(
     Computes Recall@K, Precision@K, and MRR against ground truth supporting evidence.
     """
     if not supporting_evidence:
-        return {"recall_at_k": 1.0, "precision_at_k": 1.0, "mrr": 1.0}
+        unavailable = float("nan")
+        return {
+            "recall_at_k": unavailable,
+            "precision_at_k": unavailable,
+            "mrr": unavailable,
+        }
 
     if not retrieved_memories:
         return {"recall_at_k": 0.0, "precision_at_k": 0.0, "mrr": 0.0}
