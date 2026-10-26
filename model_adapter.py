@@ -221,13 +221,24 @@ class LlamaCppAdapter(BaseLLMAdapter):
         **kwargs: Any
     ) -> str:
         temp = temperature if temperature is not None else self.default_temperature
-        response = self.llm.create_chat_completion(
-            messages=messages,
+        prompt_parts = []
+        for message in messages:
+            role = message.get("role", "user")
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
+        prompt = "".join(prompt_parts) + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        generation_kwargs = dict(kwargs)
+        generation_kwargs.pop("stop", None)
+        response = self.llm(
+            prompt=prompt,
             max_tokens=max_tokens,
             temperature=temp,
-            **kwargs
+            stop=["<|im_end|>", "<|endoftext|>"],
+            **generation_kwargs
         )
-        return response["choices"][0]["message"]["content"].strip()
+        return response["choices"][0]["text"].strip()
 
 
 def get_model_adapter(
