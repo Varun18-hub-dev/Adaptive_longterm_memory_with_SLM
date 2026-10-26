@@ -204,29 +204,48 @@ class HeuristicCandidateExtractor(BaseCandidateExtractor):
     @staticmethod
     def _is_admissible_assistant_turn(text: str) -> bool:
         """
-        Policy for assistant turns:
-        Generic assistant advice, code explanations, pleasantries, and commentary
-        must never pollute personal memory stores.
-        Assistant turns are only admitted if they contain an identifiable entity-attribute fact slot
-        or an explicit user-referential fact assertion (e.g. 'You work at DeepMind', 'Your dog's name is Luna').
+        Admit structured personal facts, explicit user-referential facts, and
+        concrete assistant recommendations that contain named entities or
+        quantified real-world facts. Reject generic advice and closings.
         """
-        # 1. Check if it matches a structured entity-attribute fact slot
         if extract_fact_slot(text) is not None:
             return True
 
         text_lower = text.lower()
-        # 2. Check for explicit user-referential assertion
         user_ref = re.search(r"\b(you|your|user)\b", text_lower)
         if user_ref:
             user_fact_predicates = [
                 r"\b(work at|live in|moved to|prefer|like|use|own|drive|joined|graduated from)\b",
                 r"\b(name is|dog is|cat is|pet is|car is|job is|employer is|title is)\b",
-                r"\b(favorite|preference|degree|budget|hometown)\b"
+                r"\b(favorite|preference|degree|budget|hometown)\b",
             ]
             if any(re.search(pat, text_lower) for pat in user_fact_predicates):
                 return True
 
-        return False
+        generic_patterns = [
+            r"^let me know if you need\b",
+            r"^here are some recommendations\b",
+            r"^these are just a few\b",
+            r"^be sure to do some research\b",
+            r"^i recommend getting enough sleep\b",
+            r"^i hope this helps\b",
+        ]
+        if any(re.search(pat, text_lower) for pat in generic_patterns):
+            return False
+        if is_filler_sentence(text):
+            return False
+
+        recommendation_pattern = r"\b(check out|visit|try|consider|recommend|suggest|offers?|provides?|includes?)\b"
+        entity_pattern = r"\b[A-Z][A-Za-z0-9&'-]*(?:\s+(?:[A-Z][A-Za-z0-9&'-]*|of|the|in|at|&)){0,4}\b"
+        has_recommendation = re.search(recommendation_pattern, text, re.IGNORECASE)
+        has_named_entity = re.search(entity_pattern, text)
+        has_amount = re.search(r"(?:\$\s*\d+(?:\.\d{1,2})?|\b\d+(?:\.\d{1,2})?\s*(?:USD|dollars|rupees|INR)\b)", text, re.IGNORECASE)
+        factual_anchor = re.search(r"\b(fee|cost|price|paid|spent|medication|subscription|appointment|consultation|dose|quantity|duration)\b", text_lower)
+
+        return bool(
+            (has_recommendation and has_named_entity)
+            or (has_amount and factual_anchor)
+        )
 
     def _classify_candidate(self, text: str) -> Tuple[MemoryType, float, float, float, LifecycleStatus, Dict[str, Any]]:
         text_lower = text.lower()
