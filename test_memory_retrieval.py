@@ -132,6 +132,160 @@ class TestHardenedRetrievalAndDistractorExclusion(unittest.TestCase):
         self.assertIn("old-1", retrieved_ids, "At t=1500, OpenAI was the active fact")
         self.assertNotIn("cur-1", retrieved_ids, "DeepMind (created at t=2000) was in the future at t=1500")
 
+    def test_lola_dual_expense_retrieval(self):
+        # Regression test for Lola example:
+        # Two distinct expenses (vet visit $50 and flea medication $25) in archive must both be retrieved
+        vet_visit = MemoryItem(
+            id="lola-vet-1",
+            content="By the way, I remember when I took Lola to the vet last week, the consultation fee was $50, which was a discounted price for regular customers.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+            utility_score=0.8,
+            recency=0.2,
+            stability=0.6,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+        flea_med = MemoryItem(
+            id="lola-flea-1",
+            content="By the way, I also got her flea and tick prevention medication, it was $25 for a 3-month supply.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s2",
+            timestamp=200.0,
+            utility_score=0.8,
+            recency=0.3,
+            stability=0.6,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+        vet_paraphrase = MemoryItem(
+            id="lola-vet-dup",
+            content="By the way, I just took Lola to the vet last week and got a discounted consultation fee of $50 as a regular customer.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s3",
+            timestamp=300.0,
+            utility_score=0.7,
+            recency=0.4,
+            stability=0.5,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+        unrelated_recent = MemoryItem(
+            id="art-visit-1",
+            content="It's a must-visit for any street art enthusiast!",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s40",
+            timestamp=4000.0,
+            utility_score=0.7,
+            recency=1.0,
+            stability=0.5,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+
+        query = "What is the total cost of Lola's vet visit and flea medication?"
+        retrieved = retrieve_memories(
+            query=query,
+            episodic_store=[unrelated_recent],
+            semantic_store=[],
+            archive_store=[vet_visit, flea_med, vet_paraphrase],
+            top_k=5
+        )
+
+        retrieved_ids = [m[0].id for m in retrieved]
+        has_vet = "lola-vet-1" in retrieved_ids or "lola-vet-dup" in retrieved_ids
+        self.assertTrue(has_vet, "Vet visit expense ($50) must be retrieved")
+        self.assertIn("lola-flea-1", retrieved_ids, "Flea medication expense ($25) must be retrieved")
+        self.assertNotIn("art-visit-1", retrieved_ids, "Unrelated street art distractor must be excluded")
+
+    def test_ordinary_non_historical_query_retrieves_archived_fact(self):
+        # Ordinary query without historical keywords should retrieve valid archived facts
+        archived_fact = MemoryItem(
+            id="db-fact",
+            content="My primary database is PostgreSQL.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s1",
+            timestamp=100.0,
+            utility_score=0.85,
+            recency=0.2,
+            stability=0.9,
+            lifecycle_status=LifecycleStatus.ACTIVE,
+            metadata={"slot_type": "database", "slot_value": "postgresql"}
+        )
+        active_unrelated = MemoryItem(
+            id="ui-today",
+            content="We discussed the design system color palette today.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s10",
+            timestamp=2000.0,
+            utility_score=0.5,
+            recency=1.0,
+            stability=0.3,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+
+        query = "What is my primary database?"
+        retrieved = retrieve_memories(
+            query=query,
+            episodic_store=[active_unrelated],
+            semantic_store=[],
+            archive_store=[archived_fact],
+            top_k=5
+        )
+
+        retrieved_ids = [m[0].id for m in retrieved]
+        self.assertIn("db-fact", retrieved_ids, "Valid archived fact must be retrieved for ordinary query")
+        self.assertNotIn("ui-today", retrieved_ids, "Unrelated active memory must not displace relevant archived fact")
+
+    def test_superseded_fact_in_archive_not_retrieved_for_current_query(self):
+        # A superseded fact in archive must NEVER be retrieved for a current-state query
+        older_superseded = MemoryItem(
+            id="old-city",
+            content="I live in New York City.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s1",
+            timestamp=1000.0,
+            utility_score=0.7,
+            recency=0.2,
+            stability=0.8,
+            lifecycle_status=LifecycleStatus.SUPERSEDED,
+            metadata={"slot_type": "location", "slot_value": "new york city", "superseded_at": 3000.0}
+        )
+        newer_active = MemoryItem(
+            id="cur-city",
+            content="I moved to Seattle last month and live in Seattle now.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s2",
+            timestamp=3000.0,
+            utility_score=0.9,
+            recency=1.0,
+            stability=0.85,
+            lifecycle_status=LifecycleStatus.ACTIVE,
+            metadata={"slot_type": "location", "slot_value": "seattle"}
+        )
+
+        # Current query: only Seattle must be returned
+        current_query = "Where do I live right now?"
+        retrieved_current = retrieve_memories(
+            query=current_query,
+            episodic_store=[],
+            semantic_store=[newer_active],
+            archive_store=[older_superseded],
+            top_k=5
+        )
+        current_ids = [m[0].id for m in retrieved_current]
+        self.assertIn("cur-city", current_ids, "Current city must be retrieved")
+        self.assertNotIn("old-city", current_ids, "Superseded city must NOT be retrieved for current query")
+
+        # Historical query: superseded fact must be surfaced
+        hist_query = "Where did I live before moving to Seattle?"
+        retrieved_hist = retrieve_memories(
+            query=hist_query,
+            episodic_store=[],
+            semantic_store=[newer_active],
+            archive_store=[older_superseded],
+            top_k=5
+        )
+        hist_ids = [m[0].id for m in retrieved_hist]
+        self.assertIn("old-city", hist_ids, "Superseded city must be retrieved for historical query")
+
 
 class TestContextAssemblyAndPromptBudgetAccounting(unittest.TestCase):
     def test_budget_tracker_accounting(self):

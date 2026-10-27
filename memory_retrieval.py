@@ -48,7 +48,7 @@ COMMON_STOPWORDS: Set[str] = {
     "should", "so", "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves",
     "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until",
     "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
-    "why", "with", "would", "you", "your", "yours", "yourself", "yourselves", "help", "please"
+    "why", "with", "would", "you", "your", "yours", "yourself", "yourselves", "help", "please", "s", "t", "d", "m", "ll", "ve", "re"
 }
 
 
@@ -138,8 +138,12 @@ def compute_query_relevance(query: str, memory: MemoryItem) -> float:
     if not q_content_words:
         q_content_words = q_tokens  # Fallback if query only contained stopwords
 
-    # Keyword intersection
+    # Keyword intersection with expense semantic bridging
     intersection = q_content_words.intersection(m_content_words)
+    expense_synonyms = {"cost", "fee", "price", "paid", "spent", "expense", "expenses", "bill"}
+    if not (q_content_words & m_content_words & expense_synonyms):
+        if (q_content_words & expense_synonyms) and (m_content_words & expense_synonyms):
+            intersection = intersection | {"_expense_synonym"}
     content_overlap = len(intersection) / max(1, len(q_content_words))
 
     # Slot matching & domain affinity
@@ -168,7 +172,7 @@ def compute_query_relevance(query: str, memory: MemoryItem) -> float:
 
     base_sim = compute_text_similarity(query, memory.content)
 
-    relevance = 0.50 * content_overlap + 0.20 * base_sim + slot_boost
+    relevance = 0.65 * content_overlap + 0.35 * base_sim + slot_boost
     return round(max(0.0, min(1.0, relevance)), 4)
 
 
@@ -179,7 +183,7 @@ def retrieve_memories(
     archive_store: Optional[List[MemoryItem]] = None,
     top_k: int = 5,
     weights: Optional[RetrievalWeights] = None,
-    min_relevance_threshold: float = 0.20,
+    min_relevance_threshold: float = 0.18,
     margin_pruning_ratio: float = 0.40
 ) -> List[Tuple[MemoryItem, float]]:
     """
@@ -199,7 +203,7 @@ def retrieve_memories(
     point_in_time = extract_query_point_in_time(query)
 
     pool = list(episodic_store) + list(semantic_store)
-    if is_hist or point_in_time is not None:
+    if archive_store:
         pool.extend(archive_store)
 
     scored_candidates: List[Tuple[MemoryItem, float]] = []
@@ -241,14 +245,20 @@ def retrieve_memories(
 
     scored_candidates.sort(key=lambda x: x[1], reverse=True)
 
-    # Dynamic margin pruning: prune items whose score is significantly below the top score
+    # Dynamic margin pruning and distinct fact preservation
     top_score = scored_candidates[0][1]
-    filtered_results = [
-        (mem, score) for mem, score in scored_candidates
-        if score >= top_score * margin_pruning_ratio
-    ]
+    filtered_results: List[Tuple[MemoryItem, float]] = []
+    for mem, score in scored_candidates:
+        if score < top_score * margin_pruning_ratio:
+            continue
+        # Avoid duplicate near-identical items crowding out distinct facts/expenses
+        if any(compute_text_similarity(mem.content, prev_mem.content) >= 0.60 for prev_mem, _ in filtered_results):
+            continue
+        filtered_results.append((mem, score))
+        if len(filtered_results) >= top_k:
+            break
 
-    return filtered_results[:top_k]
+    return filtered_results
 
 
 # ============================================================================
