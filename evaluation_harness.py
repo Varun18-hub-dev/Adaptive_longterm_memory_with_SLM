@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import collections
 import json
+import math
 import os
 import re
 import statistics
@@ -436,6 +437,11 @@ class ExperimentHarness:
                 n = len(items)
                 failed_count = sum(1 for i in items if i.error is not None)
                 succeeded_count = sum(1 for i in items if i.error is None)
+                valid_recalls = [item.recall_at_k for item in items if not math.isnan(item.recall_at_k)]
+                valid_precisions = [item.precision_at_k for item in items if not math.isnan(item.precision_at_k)]
+                valid_mrrs = [item.mrr for item in items if not math.isnan(item.mrr)]
+                retrieval_n = len(valid_recalls)
+
                 summary[strat_name][budget] = {
                     "count": n,
                     "succeeded_count": succeeded_count,
@@ -443,9 +449,11 @@ class ExperimentHarness:
                     "accuracy": round(sum(i.substring_accuracy for i in items) / n, 4) if n else 0.0,
                     "exact_match": round(sum(i.exact_match for i in items) / n, 4) if n else 0.0,
                     "token_f1": round(sum(i.token_f1 for i in items) / n, 4) if n else 0.0,
-                    "recall_at_k": round(sum(i.recall_at_k for i in items) / n, 4) if n else 0.0,
-                    "precision_at_k": round(sum(i.precision_at_k for i in items) / n, 4) if n else 0.0,
-                    "mrr": round(sum(i.mrr for i in items) / n, 4) if n else 0.0,
+                    "retrieval_count": retrieval_n,
+                    "missing_evidence_count": n - retrieval_n,
+                    "recall_at_k": round(sum(valid_recalls) / retrieval_n, 4) if retrieval_n else float("nan"),
+                    "precision_at_k": round(sum(valid_precisions) / retrieval_n, 4) if retrieval_n else float("nan"),
+                    "mrr": round(sum(valid_mrrs) / retrieval_n, 4) if retrieval_n else float("nan"),
                     "stale_memory_error_rate": round(sum(i.stale_memory_error for i in items) / n, 4) if n else 0.0,
                     "avg_storage_tokens": round(sum(i.storage_tokens_used for i in items) / n, 1) if n else 0.0,
                     "avg_context_tokens": round(sum(i.context_tokens_used for i in items) / n, 1) if n else 0.0,
@@ -455,13 +463,16 @@ class ExperimentHarness:
                 cat_breakdown: Dict[str, List[QuestionEvaluationResult]] = collections.defaultdict(list)
                 for i in items:
                     cat_breakdown[i.category].append(i)
-                summary[strat_name][budget]["by_category"] = {
-                    cat: {
+                summary[strat_name][budget]["by_category"] = {}
+                for cat, c_items in cat_breakdown.items():
+                    c_valid_recalls = [ci.recall_at_k for ci in c_items if not math.isnan(ci.recall_at_k)]
+                    c_retrieval_n = len(c_valid_recalls)
+                    summary[strat_name][budget]["by_category"][cat] = {
                         "count": len(c_items),
                         "accuracy": round(sum(ci.substring_accuracy for ci in c_items) / len(c_items), 4),
                         "token_f1": round(sum(ci.token_f1 for ci in c_items) / len(c_items), 4),
+                        "retrieval_count": c_retrieval_n,
+                        "recall_at_k": round(sum(c_valid_recalls) / c_retrieval_n, 4) if c_retrieval_n else float("nan"),
                     }
-                    for cat, c_items in cat_breakdown.items()
-                }
 
         return summary

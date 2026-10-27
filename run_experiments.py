@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -140,13 +141,17 @@ def format_markdown_table(summary: dict, budgets: list) -> str:
         for b in budgets:
             if b in budget_dict:
                 m = budget_dict[b]
+                rec_val = m.get('recall_at_k', 0.0)
+                rec_str = "N/A" if (rec_val is None or math.isnan(rec_val)) else f"{rec_val * 100:.1f}%"
+                mrr_val = m.get('mrr', 0.0)
+                mrr_str = "N/A" if (mrr_val is None or math.isnan(mrr_val)) else f"{mrr_val:.3f}"
                 row = [
                     f"`{strat_name}`",
                     str(b),
                     f"{m['accuracy'] * 100:.1f}%",
                     f"{m['token_f1']:.3f}",
-                    f"{m['recall_at_k'] * 100:.1f}%",
-                    f"{m['mrr']:.3f}",
+                    rec_str,
+                    mrr_str,
                     f"{m['stale_memory_error_rate'] * 100:.1f}%",
                     f"{m['avg_storage_tokens']:.1f}",
                     f"{m['avg_latency_ms']:.1f}"

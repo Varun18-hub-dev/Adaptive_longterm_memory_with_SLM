@@ -2,6 +2,7 @@
 Unit Tests for Phase 4 Evaluation Metrics and Experiment Harness.
 """
 
+import math
 import tempfile
 import unittest
 
@@ -47,6 +48,14 @@ class TestEvaluationMetrics(unittest.TestCase):
         self.assertEqual(metrics["recall_at_k"], 1.0)
         self.assertEqual(metrics["precision_at_k"], 0.5)
         self.assertEqual(metrics["mrr"], 1.0)
+
+    def test_retrieval_metrics_missing_evidence_returns_nan(self):
+        mem1 = MemoryItem(id="1", content="I work at DeepMind.", memory_type=MemoryType.SEMANTIC,
+                          source_session_id="s", timestamp=0)
+        metrics = evaluate_retrieval_quality([mem1], [])
+        self.assertTrue(math.isnan(metrics["recall_at_k"]))
+        self.assertTrue(math.isnan(metrics["precision_at_k"]))
+        self.assertTrue(math.isnan(metrics["mrr"]))
 
     def test_stale_memory_error_detection(self):
         mem = MemoryItem(
@@ -95,6 +104,43 @@ class TestExperimentHarness(unittest.TestCase):
             self.assertIn("summary", payload)
             self.assertIn("per_question_results", payload)
             self.assertEqual(len(payload["per_question_results"]), 2 * 2 * 2)  # 2 budgets * 2 strats * 2 questions
+
+    def test_aggregate_results_transparent_nan_handling(self):
+        from evaluation_harness import QuestionEvaluationResult
+        fake_llm = FakeLLMAdapter()
+        harness = ExperimentHarness(llm_adapter=fake_llm)
+
+        r1 = QuestionEvaluationResult(
+            question_id="q1", category="c1", strategy_name="strat_test", budget=100,
+            user_query="q1", expected_answer="a1", generated_response="a1",
+            retrieved_memory_ids=["m1"], retrieved_contents=["c1"],
+            exact_match=1.0, substring_accuracy=1.0, token_f1=1.0,
+            recall_at_k=1.0, precision_at_k=1.0, mrr=1.0,
+            stale_memory_error=0.0, storage_tokens_used=50, context_tokens_used=20,
+            retrieval_latency_ms=1.0, generation_latency_ms=2.0, total_latency_ms=3.0
+        )
+        r2 = QuestionEvaluationResult(
+            question_id="q2", category="c1", strategy_name="strat_test", budget=100,
+            user_query="q2", expected_answer="a2", generated_response="a2",
+            retrieved_memory_ids=[], retrieved_contents=[],
+            exact_match=0.0, substring_accuracy=0.0, token_f1=0.0,
+            recall_at_k=float("nan"), precision_at_k=float("nan"), mrr=float("nan"),
+            stale_memory_error=0.0, storage_tokens_used=50, context_tokens_used=20,
+            retrieval_latency_ms=1.0, generation_latency_ms=2.0, total_latency_ms=3.0
+        )
+
+        summary = harness.aggregate_results([r1, r2], budgets=[100])
+        metrics = summary["strat_test"][100]
+
+        # Total count is 2
+        self.assertEqual(metrics["count"], 2)
+        # Exactly 1 question had valid retrieval metrics
+        self.assertEqual(metrics["retrieval_count"], 1)
+        self.assertEqual(metrics["missing_evidence_count"], 1)
+        # NaN is neither treated as 0.0 nor 1.0; recall average over valid questions is 1.0
+        self.assertEqual(metrics["recall_at_k"], 1.0)
+        self.assertEqual(metrics["precision_at_k"], 1.0)
+        self.assertEqual(metrics["mrr"], 1.0)
 
 
 if __name__ == "__main__":
