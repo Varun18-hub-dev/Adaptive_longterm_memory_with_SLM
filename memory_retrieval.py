@@ -175,7 +175,18 @@ def compute_query_relevance(query: str, memory: MemoryItem) -> float:
         if memory.lifecycle_status == LifecycleStatus.TEMPORARY:
             slot_boost = -0.30
 
-    relevance = 0.65 * content_overlap + 0.35 * base_sim + slot_boost
+    entity_boost = 0.0
+    # Entity-aware check:
+    # When query asks "Where" (location/venue), physical venue references (e.g. "near [Entity]", "to [Entity]")
+    # with domain overlap should be boosted, while third-party apps should not masquerade as locations.
+    is_where_query = bool(re.search(r"\bwhere\b", q_lower))
+    if is_where_query and len(intersection) > 0:
+        if re.search(r"\b(?:near|at|to)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*", memory.content):
+            entity_boost += 0.20
+        if re.search(r"\b(?:app|library|website)\b", mem_lower) and not re.search(r"\b(?:studio|center|gym|building|room)\b", mem_lower):
+            entity_boost -= 0.15
+
+    relevance = 0.65 * content_overlap + 0.35 * base_sim + slot_boost + entity_boost
     return round(max(0.0, min(1.0, relevance)), 4)
 
 

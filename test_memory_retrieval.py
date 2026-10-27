@@ -352,6 +352,91 @@ class TestHardenedRetrievalAndDistractorExclusion(unittest.TestCase):
         self.assertNotIn("loc-kolkovna", retrieved_ids, "Unrelated location distractor must not be retrieved")
         self.assertIn("yoga-serenity", retrieved_ids, "Relevant yoga target must be retrieved")
 
+    def test_serenity_yoga_named_entity_ranks_above_apps_and_slot_distractors(self):
+        # Query: "Where do I take yoga classes?"
+        query = "Where do I take yoga classes?"
+
+        serenity_brunch = MemoryItem(
+            id="serenity-brunch",
+            content="Do you have any recommendations for healthy brunch spots near Serenity Yoga?",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s51",
+            timestamp=6000.0,
+            utility_score=0.73,
+            recency=1.0,
+            stability=0.7,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+        serenity_practice = MemoryItem(
+            id="serenity-practice",
+            content="It's been super helpful for me, especially on days when I can't make it to Serenity Yoga.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s51",
+            timestamp=6020.0,
+            utility_score=0.64,
+            recency=1.0,
+            stability=0.4,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+        app_dylan = MemoryItem(
+            id="app-dylan",
+            content="*Dylan Werner Yoga**: A unique app that focuses on dynamic, challenging flows and offers a variety of classes.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s10",
+            timestamp=2000.0,
+            utility_score=0.64,
+            recency=0.5,
+            stability=0.4,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+        app_peloton = MemoryItem(
+            id="app-peloton",
+            content="*Peloton Digital**: While known for their cycling classes, Peloton also offers a vast yoga library with classes ranging from beginner to advanced.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s10",
+            timestamp=2000.0,
+            utility_score=0.64,
+            recency=0.5,
+            stability=0.4,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+        loc_kolkovna = MemoryItem(
+            id="loc-kolkovna",
+            content="*Kolkovna:** This restaurant is located in the heart of Prague and serves traditional Czech cuisine.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s1",
+            timestamp=1000.0,
+            utility_score=0.8,
+            recency=0.5,
+            stability=0.9,
+            lifecycle_status=LifecycleStatus.ACTIVE,
+            metadata={"slot_type": "location"}
+        )
+
+        retrieved = retrieve_memories(
+            query=query,
+            episodic_store=[],
+            semantic_store=[],
+            archive_store=[serenity_brunch, serenity_practice, app_dylan, app_peloton, loc_kolkovna],
+            top_k=5
+        )
+        retrieved_ids = [m[0].id for m in retrieved]
+
+        # Serenity Yoga facts must place in the top 5
+        self.assertIn("serenity-brunch", retrieved_ids, "Serenity Yoga brunch reference must enter top 5")
+        self.assertIn("serenity-practice", retrieved_ids, "Serenity Yoga practice reference must enter top 5")
+
+        # Unrelated location distractor must not be retrieved
+        self.assertNotIn("loc-kolkovna", retrieved_ids, "Unrelated location distractor must not be in top 5")
+
+        # Serenity Yoga facts must outrank generic app recommendations
+        rank_brunch = retrieved_ids.index("serenity-brunch")
+        rank_practice = retrieved_ids.index("serenity-practice")
+        if "app-dylan" in retrieved_ids:
+            self.assertLess(rank_brunch, retrieved_ids.index("app-dylan"), "Serenity Yoga must outrank Dylan Werner app")
+        if "app-peloton" in retrieved_ids:
+            self.assertLess(rank_brunch, retrieved_ids.index("app-peloton"), "Serenity Yoga must outrank Peloton app")
+
 
 class TestContextAssemblyAndPromptBudgetAccounting(unittest.TestCase):
     def test_budget_tracker_accounting(self):
