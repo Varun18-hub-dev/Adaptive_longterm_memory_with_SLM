@@ -286,6 +286,72 @@ class TestHardenedRetrievalAndDistractorExclusion(unittest.TestCase):
         hist_ids = [m[0].id for m in retrieved_hist]
         self.assertIn("old-city", hist_ids, "Superseded city must be retrieved for historical query")
 
+    def test_unrelated_location_memory_without_query_overlap_not_boosted(self):
+        # Query contains "Where" which matches location slot keywords, but asks about yoga classes
+        query = "Where do I take yoga classes?"
+
+        # Unrelated location memory with zero content keyword overlap
+        loc_distractor = MemoryItem(
+            id="loc-kolkovna",
+            content="*Kolkovna:** This restaurant is located in the heart of Prague and serves traditional Czech cuisine.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s1",
+            timestamp=1000.0,
+            utility_score=0.8,
+            recency=0.5,
+            stability=0.9,
+            lifecycle_status=LifecycleStatus.ACTIVE,
+            metadata={"slot_type": "location"}
+        )
+
+        # Relevant target memory with keyword overlap
+        yoga_target = MemoryItem(
+            id="yoga-serenity",
+            content="It's been super helpful for me, especially on days when I can't make it to Serenity Yoga.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s2",
+            timestamp=2000.0,
+            utility_score=0.7,
+            recency=0.6,
+            stability=0.7,
+            lifecycle_status=LifecycleStatus.ACTIVE
+        )
+
+        # Legitimate location memory with keyword overlap for location query
+        legit_location = MemoryItem(
+            id="legit-loc",
+            content="I live in Bangalore, Karnataka.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s3",
+            timestamp=3000.0,
+            utility_score=0.9,
+            recency=1.0,
+            stability=0.9,
+            lifecycle_status=LifecycleStatus.ACTIVE,
+            metadata={"slot_type": "location"}
+        )
+
+        rel_distractor = compute_query_relevance(query, loc_distractor)
+        rel_yoga = compute_query_relevance(query, yoga_target)
+        self.assertLess(rel_distractor, 0.18, "Unrelated location distractor with 0 overlap must fall below threshold")
+        self.assertGreater(rel_yoga, rel_distractor, "Relevant yoga memory must have higher relevance than unrelated location distractor")
+
+        # Legitimate location query must still receive slot boost and high relevance
+        rel_legit = compute_query_relevance("Where do I live?", legit_location)
+        self.assertGreaterEqual(rel_legit, 0.80, "Legitimate location memory must achieve high relevance")
+
+        # In full retrieval, unrelated location memory must not displace relevant memory
+        retrieved = retrieve_memories(
+            query=query,
+            episodic_store=[],
+            semantic_store=[yoga_target],
+            archive_store=[loc_distractor],
+            top_k=5
+        )
+        retrieved_ids = [m[0].id for m in retrieved]
+        self.assertNotIn("loc-kolkovna", retrieved_ids, "Unrelated location distractor must not be retrieved")
+        self.assertIn("yoga-serenity", retrieved_ids, "Relevant yoga target must be retrieved")
+
 
 class TestContextAssemblyAndPromptBudgetAccounting(unittest.TestCase):
     def test_budget_tracker_accounting(self):

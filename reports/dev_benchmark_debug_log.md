@@ -266,3 +266,75 @@
    ```
 2. **Targeted Fix 2 (Studio / Location Bridging):**
    Include "classes" / "studio" in semantic associations for activity locations.
+
+
+---
+
+## Focused Experiment: Slot-Boost Ranking on Question 3 (`6ade9755`)
+
+**Commit:** Experiment following `b2ca25a`  
+**Focus:** Slot-boost ranking anomaly where query *"Where do I take yoga classes?"* gave unrelated Prague restaurant (*Kolkovna*) a +0.40 slot boost, ranking it #1.
+
+### 1. Reproduction of Component Scores (Observed Data)
+- **Query:** *"Where do I take yoga classes?"*
+- **Query Content Words:** `['classes', 'take', 'yoga']` (with `'where'` filtered by `COMMON_STOPWORDS`).
+- **Slot Trigger:** `'where'` in query triggered `slot_keywords["location"] = ["live", "located", "city", "reside", "where", "bangalore", "london"]`.
+- **Memory:** `*Kolkovna:** This restaurant is located in the heart of Prague and serves traditional Czech cuisine.`
+  - `mem_slot`: `"location"` (assigned via regex pattern `located in`).
+  - `intersection`: `set()` (0 content words matched).
+  - `content_overlap`: `0.0`.
+  - `base_sim`: `0.1301`.
+  - **Observed Slot Boost:** `+0.40` (Awarded unconditionally via `mem_slot in query_matched_slots`).
+  - **Relevance:** `0.65 * 0.0 + 0.35 * 0.1301 + 0.40 = 0.4455`.
+  - **Composite Score:** `0.6101` (**Rank 1**).
+
+### 2. Implementation: Anchored Slot Boost
+In `memory_retrieval.py` (`compute_query_relevance`):
+```python
+    base_sim = compute_text_similarity(query, memory.content)
+
+    if mem_slot and mem_slot in query_matched_slots:
+        # Require content keyword overlap or substantial text similarity before applying slot boost,
+        # preventing unrelated memories with zero query overlap from overriding relevance.
+        if len(intersection) > 0 or base_sim >= 0.20:
+            slot_boost = 0.40
+    elif query_matched_slots and (mem_slot is None or mem_slot not in query_matched_slots):
+        if memory.lifecycle_status == LifecycleStatus.TEMPORARY:
+            slot_boost = -0.30
+```
+- **Preservation of Legitimate Location Matches:**
+  - Queries such as *"Where do I live?"* with memory *"I live in Bangalore"* share `'live'` (`len(intersection) == 1 > 0`), retaining the `+0.40` boost and full 1.0 relevance.
+- **Suppression of Zero-Overlap Distractors:**
+  - Unrelated memories with 0 content overlap and `base_sim < 0.20` receive `slot_boost = 0.0`, dropping Kolkovna's relevance from `0.4455` to `0.0455`, falling below `min_relevance_threshold = 0.18`.
+
+### 3. Regression Test Added
+Added `test_unrelated_location_memory_without_query_overlap_not_boosted` to `test_memory_retrieval.py`:
+- Verifies that `compute_query_relevance("Where do I take yoga classes?", loc_distractor) < 0.18`.
+- Verifies that target yoga fact relevance exceeds distractor relevance (`rel_yoga > rel_distractor`).
+- Verifies that legitimate location query (`"Where do I live?"`) achieves `rel >= 0.80`.
+- Verifies in full `retrieve_memories` that distractor is excluded while target is admitted.
+- **Suite Result:** 101/101 tests passed.
+
+### 4. Rerun of Question 3 (`6ade9755`) & Context Verification
+- **Does Serenity Yoga enter Top 5 or Final Context?** **NO.**
+- **Post-Fix Top 5 Retrieval for Q3:**
+  1. Rank 1 (Score 0.5909, Rel 0.4951): `*Dylan Werner Yoga...` (matches `yoga`, `classes`)
+  2. Rank 2 (Score 0.5878, Rel 0.4896): `*Peloton Digital...` (matches `yoga`, `classes`)
+  3. Rank 3 (Score 0.5384, Rel 0.3151): `Do you have a favorite aspect of vinyasa flow classes?` (matches `classes`)
+  4. Rank 4 (Score 0.5235, Rel 0.2881): `*Take your time**: Don't rush your visit.` (matches `take`)
+  5. Rank 5 (Score 0.5227, Rel 0.2867): `I usually stick to the vinyasa flow classes...` (matches `classes`)
+- **Target Serenity Yoga Facts Positions:**
+  - `5ff7b0ff`: *"Do you have any recommendations for healthy brunch spots near Serenity Yoga?"* -> **Rank 10** (Score 0.5168, Rel 0.2759)
+  - `03d3e447`: *"It's been super helpful for me, especially on days when I can't make it to Serenity Yoga."* -> **Rank 13** (Score 0.4725, Rel 0.2798)
+- **Confirmed Reason:**
+  While removing the +0.40 boost eliminates the Kolkovna distractor, the target proposition contains only `'yoga'` (1/3 overlap), whereas competing items match 2 content words (`'yoga'` + `'classes'`) or generic verbs (`'take'`, `'classes'`), edging the target fact out of the top 5 (Rank 5 cutoff: 0.5227 vs. target score: 0.5168 / 0.4725).
+
+### 5. Verification Across Questions 1, 2, 4, 5 (No Regressions)
+
+| Question | Query | Recall@5 Before | Recall@5 After | Precision@5 Before | Precision@5 After | MRR Before | MRR After | Latency Before | Latency After | Top 1 Preserved |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Q1** (`94f70d80`) | IKEA bookshelf | 1.0 (1/1) | 1.0 (1/1) | 0.20 (1/5) | 0.20 (1/5) | 1.0 (1/1) | 1.0 (1/1) | 282.00 ms | 267.74 ms | Yes (Rank 1) |
+| **Q2** (`bc8a6e93_abs`) | Uncle birthday bake | NaN (0/0) | NaN (0/0) | NaN (0/0) | NaN (0/0) | NaN (0/0) | NaN (0/0) | 237.87 ms | 245.54 ms | Yes (NaN preserved) |
+| **Q3** (`6ade9755`) | Yoga classes | 0.0 (0/1) | 0.0 (0/1) | 0.00 (0/5) | 0.00 (0/5) | 0.0 (0/1) | 0.0 (0/1) | 220.64 ms | 206.54 ms | Distractor removed |
+| **Q4** (`bc8a6e93`) | Niece birthday bake | 1.0 (1/1) | 1.0 (1/1) | 0.20 (1/5) | 0.20 (1/5) | 1.0 (1/1) | 1.0 (1/1) | 482.65 ms | 257.89 ms | Yes (Rank 1) |
+| **Q5** (`6f9b354f`) | Bedroom walls color | 1.0 (1/1) | 1.0 (1/1) | 0.33 (1/3) | 0.33 (1/3) | 1.0 (1/1) | 1.0 (1/1) | 368.09 ms | 260.16 ms | Yes (Rank 1) |

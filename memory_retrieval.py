@@ -162,15 +162,18 @@ def compute_query_relevance(query: str, memory: MemoryItem) -> float:
         if any(kw in q_lower for kw in kws):
             query_matched_slots.append(slot_name)
 
+    base_sim = compute_text_similarity(query, memory.content)
+
     if mem_slot and mem_slot in query_matched_slots:
-        slot_boost = 0.40
+        # Require content keyword overlap or substantial text similarity before applying slot boost,
+        # preventing unrelated memories with zero query overlap from overriding relevance.
+        if len(intersection) > 0 or base_sim >= 0.20:
+            slot_boost = 0.40
     elif query_matched_slots and (mem_slot is None or mem_slot not in query_matched_slots):
         # Query specifically targeted a recognized slot (e.g. employment),
         # but this memory is an unrelated slot or transient episodic task
         if memory.lifecycle_status == LifecycleStatus.TEMPORARY:
             slot_boost = -0.30
-
-    base_sim = compute_text_similarity(query, memory.content)
 
     relevance = 0.65 * content_overlap + 0.35 * base_sim + slot_boost
     return round(max(0.0, min(1.0, relevance)), 4)
