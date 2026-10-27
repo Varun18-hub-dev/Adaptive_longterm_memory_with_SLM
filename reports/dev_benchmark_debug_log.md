@@ -399,3 +399,271 @@ Added `test_serenity_yoga_named_entity_ranks_above_apps_and_slot_distractors` in
 - **Recall@5:** 0.7500 (3/4) $\rightarrow$ **1.0000 (4/4)** (**+25.0%**)
 - **Precision@5:** 0.1833 $\rightarrow$ **0.2333**
 - **MRR:** 0.7500 $\rightarrow$ **0.8750** (**+12.5%**)
+
+
+---
+
+# LongMemEval Dev Benchmark: Batch 2 (Questions 6–10)
+
+**Branch:** `eval-dev-benchmark-30q`  
+**Starting Commit:** `0422bb4`  
+**Evaluation Date:** 2026-10-28  
+**Benchmark Configuration:**
+- Total Memory Store Budget: 500 tokens
+- Max Context Budget for Retrieval: 256 tokens
+- Top-K Retrieved: 5
+- Minimum Relevance Threshold: 0.18
+- Margin Pruning Ratio: 0.40
+- Model Adapter: `FakeLLMAdapter` (Simulated baseline; not genuine LLM reasoning)
+- Dataset Split: `longmemeval_s_dev.json` (Examples 6–10 in original order)
+
+---
+
+## Executive Summary: Batch 2 (Questions 6–10)
+
+All five questions in Batch 2 belong to the **`multi-session`** category, requiring the model to aggregate multiple facts across 42 to 47 distinct conversation sessions.
+
+| Q# | Question ID | Category | Evidence Facts | Retrieval Outcome (Hits in Top 5) | Recall@5 | Precision@5 | MRR | Ret Latency | Primary Failure / Success Mode |
+|---|---|---|---|---|---|---|---|---|---|
+| 6 | `bc149d6b` | multi-session | 2 facts | **1 of 2 retrieved** (Rank 5) | 0.50 (1/2) | 0.20 (1/5) | 0.20 (1/5) | 517.46 ms | EV 2 (`bought 20 lbs scratch grains`) missed: synonym gap (`bought` vs `purchased`, `grains` vs `feed`) |
+| 7 | `5a7937c8` | multi-session | 3 facts | **0 of 3 retrieved** (0 results) | 0.00 (0/3) | 0.00 (0/0) | 0.00 (0/1) | 1,121.96 ms | **Threshold pathology:** 7-word query causes 1-word overlap ($1/7=0.143$) to fall below 0.18 cutoff for all facts |
+| 8 | `gpt4_59c863d7` | multi-session | 5 facts | **1 of 5 retrieved** (Rank 1) | 0.20 (1/5) | 0.20 (1/5) | 1.00 (1/1) | 782.82 ms | EV 2 (F-15) hit at Rank 1. Other 4 kits lack unigram overlap with `model` / `kit` / exact verb inflection `worked` |
+| 9 | `d682f1a2` | multi-session | 3 facts | **2 of 3 retrieved** (Rank 1 & 2) | 0.67 (2/3) | 0.40 (2/5) | 1.00 (1/1) | 1,003.70 ms | Domino's (Rank 1) and Fresh Fusion (Rank 2) hit. Uber Eats missed because it lacks `food`, `delivery`, `services` |
+| 10 | `8979f9ec` | multi-session | 2 facts | **1 of 2 retrieved** (Rank 1 & 2) | 1.00* (2 hits / 2 ev) | 0.40 (2/5) | 1.00 (1/1) | 1,407.59 ms | Fajitas hit at Rank 1 & 2. Lentil soup (5 lunches) missed Rank 5 by 0.006 score margin (*evaluator counted duplicate hits on Fajitas) |
+
+**Batch 2 Aggregate Metrics (5 Multi-Session Questions, 15 Ground-Truth Evidence Facts):**
+- **Evidence-Annotated Questions:** 5 / 5 (100%)
+- **Missing / Unannotated Questions:** 0 / 5
+- **Macro Recall@5:** **0.4733** (Mean over 5 questions: [0.50, 0.00, 0.20, 0.67, 1.00*])
+- **Macro Precision@5:** **0.2400** (Mean over 5 questions: [0.20, 0.00, 0.20, 0.40, 0.40])
+- **Macro MRR:** **0.6400** (Mean over 5 questions: [0.20, 0.00, 1.00, 1.00, 1.00])
+- **Total Facts Retrieved in Top 5:** 6 of 15 ground-truth evidence items
+
+---
+
+## Detailed Diagnostic Traces: Questions 6–10
+
+### Question 6: `bc149d6b`
+1. **Metadata:**
+   - **Question ID:** `bc149d6b`
+   - **Category:** `multi-session`
+   - **Query:** *"What is the total weight of the new feed I purchased in the past two months?"*
+   - **Expected Answer:** `"70 pounds"`
+   - **Evidence Availability:** 2 supporting evidence facts across distinct sessions.
+2. **Fact Location in Original Sessions:**
+   - Fact 1 (Session 10, Turn 1, user): *"I'm wondering if you can help me calculate the cost per pound of the layer feed I recently purchased. I got a 50-pound batch, and I'm trying to track my expenses for the farm."*
+   - Fact 2 (Session 11, Turn 1, user): *"By the way, I also bought 20 pounds of organic scratch grains for my chickens recently, and I've noticed an improvement in the quality of eggs."*
+3. **Ingestion & Memory Formation Survival:**
+   - Fact 1 propositions survived:
+     - `7ce15dcd`: *"I'm wondering if you can help me calculate the cost per pound of the layer feed I recently purchased."*
+     - `96755cf5`: *"I got a 50-pound batch, and I'm trying to track my expenses for the farm."*
+   - Fact 2 propositions survived:
+     - `0236877b`: *"By the way, I also bought 20 pounds of organic scratch grains for my chickens recently, and I've noticed an improvement in the quality of eggs."*
+4. **Residency at Retrieval Time:**
+   - Both facts reside in `archive_store` (active episodic/semantic capacity capped under 500-token budget across 46 sessions).
+   - Lifecycle Status: `7ce15dcd` (`TEMPORARY`), `96755cf5` (`ACTIVE`), `0236877b` (`ACTIVE`).
+5. **Retrieval Rank, Score & Context Inclusion:**
+   - Rank 1 (Score 0.5195, Rel 0.2808): Assistant distractor (`50-pound batch of feed is $25.00`)
+   - Rank 2 (Score 0.4709, Rel 0.1924): Assistant distractor (`layer feed... discount is $2.16`)
+   - Rank 3 (Score 0.4662, Rel 0.1838): Assistant distractor (`layer feed would be $0.50`)
+   - Rank 4 (Score 0.4603, Rel 0.2577): Distractor (`Hamilton soundtrack on daily commute`)
+   - **Rank 5 (Score 0.4587, Rel 0.2693):** **`7ce15dcd` [HIT - Fact 1]**
+   - **Fact 2 (`0236877b`, 20 lbs scratch grains):** Relevance = `0.0811`. **Excluded** below `min_relevance_threshold = 0.18`.
+   - **Context Inclusion:** 5 / 5 retrieved items entered context (174 / 256 tokens). Fact 1 entered context; Fact 2 did not.
+6. **Generated Response & Answer Metrics:**
+   - **Response:** Simulated response via `FakeLLMAdapter` (Exact Match: 0.0, Substring: 0.0, F1: 0.0).
+7. **Retrieval Metrics:**
+   - **Recall@5:** `0.50` (Denominator: 1 hit / 2 ground-truth facts)
+   - **Precision@5:** `0.20` (Denominator: 1 hit / 5 retrieved items)
+   - **MRR:** `0.20` (Denominator: 1 / 5th rank)
+8. **Confirmed Reason for Outcome:**
+   - **Partial Hit / Lexical Synonym Mismatch:** Fact 1 was retrieved at Rank 5 because it shares exact tokens `feed` and `purchased`. Fact 2 failed because the user used `"bought"` instead of `"purchased"` and `"organic scratch grains for chickens"` instead of `"feed"`. While expense synonyms (`cost`/`fee`/`price`) are bridged in `memory_retrieval.py`, purchase synonyms (`bought`/`purchased`) and agricultural feed synonyms are unbridged, yielding 0 keyword overlap and dropping Fact 2 below the 0.18 threshold.
+
+---
+
+### Question 7: `5a7937c8`
+1. **Metadata:**
+   - **Question ID:** `5a7937c8`
+   - **Category:** `multi-session`
+   - **Query:** *"How many days did I spend participating in faith-related activities in December?"*
+   - **Expected Answer:** `"3 days."`
+   - **Evidence Availability:** 3 supporting evidence facts across distinct sessions.
+2. **Fact Location in Original Sessions:**
+   - Fact 1 (Session 6, Turn 1, user): *"I actually helped out at the church's annual holiday food drive on December 10th, sorting donations and packing boxes for families in need..."*
+   - Fact 2 (Session 23, Turn 1, user): *"By the way, I just got back from a lovely midnight mass on Christmas Eve at St. Mary's Church, which was on December 24th, with my family."*
+   - Fact 3 (Session 34, Turn 1, user): *"By the way, I actually just did a Bible study on this same topic at my church a few weeks ago, on December 17th, and it was really thought-provoking."*
+3. **Ingestion & Memory Formation Survival:**
+   - All 3 facts survived into propositions:
+     - Fact 1: `c40c2c2e` (*"I actually helped out at the church's annual holiday food drive on December 10th..."*)
+     - Fact 2: `fb0bff11` (*"Mary's Church, which was on December 24th, with my family."*)
+     - Fact 3: `7a3ecca3` (*"By the way, I actually just did a Bible study on this same topic at my church a few weeks ago, on December 17th..."*)
+4. **Residency at Retrieval Time:**
+   - Reside in `archive_store` (active pool capped under 500-token budget across 42 sessions).
+   - Lifecycle Status: `c40c2c2e` (`ACTIVE`), `fb0bff11` (`STABLE`), `7a3ecca3` (`TEMPORARY`).
+5. **Retrieval Rank, Score & Context Inclusion:**
+   - **Retrieved Items:** **0 items** (`[]`).
+   - All candidates in store fell below the `min_relevance_threshold = 0.18`.
+   - **Fact 1 (`c40c2c2e`):** Relevance = `0.1215` ($< 0.18$)
+   - **Fact 2 (`fb0bff11`):** Relevance = `0.1457` ($< 0.18$)
+   - **Fact 3 (`7a3ecca3`):** Relevance = `0.1530` ($< 0.18$)
+   - **Context Inclusion:** 0 tokens used; empty context passed to adapter.
+6. **Generated Response & Answer Metrics:**
+   - **Response:** Simulated response via `FakeLLMAdapter` (Exact Match: 0.0, Substring: 0.0, F1: 0.0).
+7. **Retrieval Metrics:**
+   - **Recall@5:** `0.00` (Denominator: 0 hits / 3 ground-truth facts)
+   - **Precision@5:** `0.00` (Denominator: 0 hits / 0 retrieved items)
+   - **MRR:** `0.00` (Denominator: 0 / 1)
+8. **Confirmed Reason for Failure:**
+   - **Threshold Cutoff Pathology on Multi-Token Queries:** The query has 7 content words: `['days', 'spend', 'participating', 'faith', 'related', 'activities', 'december']`. Each ground-truth proposition mentions the specific activity (`church`, `food drive`, `mass`, `Bible study`) and the date (`December 10th`, `December 24th`, `December 17th`), but only shares the single token `december` with the query. Because `content_overlap = 1 / 7 = 0.1429`, the relevance formula produces:
+     $$\text{relevance} = 0.65 \times 0.1429 + 0.35 \times 0.15 \approx 0.145$$
+     Because $0.145 < 0.18$, the hardcoded cutoff excludes all three target facts, leaving the retrieved set completely empty.
+
+---
+
+### Question 8: `gpt4_59c863d7`
+1. **Metadata:**
+   - **Question ID:** `gpt4_59c863d7`
+   - **Category:** `multi-session`
+   - **Query:** *"How many model kits have I worked on or bought?"*
+   - **Expected Answer:** *"I have worked on or bought five model kits. The scales of the models are: Revell F-15 Eagle (scale not mentioned), Tamiya 1/48 scale Spitfire Mk.V, 1/16 scale German Tiger I tank, 1/72 scale B-29 bomber, and 1/24 scale '69 Camaro."*
+   - **Evidence Availability:** 5 supporting evidence facts across distinct sessions.
+2. **Fact Location in Original Sessions:**
+   - Fact 1 (Session 2, Turn 1, user): B-29 bomber & '69 Camaro at model show.
+   - Fact 2 (Session 33, Turn 1, user): Revell F-15 Eagle kit.
+   - Fact 3 (Session 41, Turn 1, user): 1/16 scale German Tiger I tank diorama.
+   - Fact 4 (Session 44, Turn 1, user): Tamiya 1/48 scale Spitfire Mk.V.
+   - Fact 5 (Session 44, Turn 9, user): 1/72 scale B-29 bomber next project.
+3. **Ingestion & Memory Formation Survival:**
+   - All 5 kits survived into proposition memories in `archive_store`:
+     - F-15 kit: `1da9f1c3` and `843505ea`.
+     - B-29 & Camaro: `129056e3` and `8130b22a`.
+     - Tiger I tank: `a8b9c579`.
+     - Spitfire Mk.V: `56c9fe82`.
+4. **Residency at Retrieval Time:**
+   - Reside in `archive_store` (active pool capped under 500-token budget across 47 sessions).
+5. **Retrieval Rank, Score & Context Inclusion:**
+   - **Rank 1 (Score 0.5513, Rel 0.3387):** **`1da9f1c3` [HIT - Fact 2: Revell F-15 kit]**
+   - Rank 2 (Score 0.5083, Rel 0.1949): Distractor (`chicken breasts I bought at Walmart`)
+   - Rank 3 (Score 0.5065, Rel 0.1917): Distractor (`never worked with eel before`)
+   - Rank 4 (Score 0.4855, Rel 0.1857): Distractor (`libraries like pandas, NumPy`)
+   - Rank 5 (Score 0.4847, Rel 0.2175): Distractor (`AI language model cannot recommend`)
+   - **Context Inclusion:** 5 / 5 retrieved items entered context (155 / 256 tokens).
+6. **Generated Response & Answer Metrics:**
+   - **Response:** Simulated response via `FakeLLMAdapter` (Exact Match: 0.0, Substring: 0.0, F1: 0.0).
+7. **Retrieval Metrics:**
+   - **Recall@5:** `0.20` (Denominator: 1 hit / 5 ground-truth facts)
+   - **Precision@5:** `0.20` (Denominator: 1 hit / 5 retrieved items)
+   - **MRR:** `1.00` (Denominator: 1 / 1st rank)
+8. **Confirmed Reason for Outcome:**
+   - **Inflection Mismatch & Token Absence:** The query has content words `['model', 'kits', 'worked', 'bought']`.
+     - `1da9f1c3` (Revell F-15) contains both `model` and `kits`, scoring rank 1.
+     - `56c9fe82` (Spitfire Mk.V) says: *"I recently finished a Tamiya 1/48 scale Spitfire Mk.V..."* (it does not contain `model`, `kit`, `worked`, or `bought`).
+     - `a8b9c579` (Tiger I tank) says: *"started working on a diorama featuring a 1/16 scale German Tiger I tank..."* (it contains `working`, but unstemmed token matching misses `worked`).
+     - Distractors with common words like `bought` (`bought chicken breasts at Walmart`) or `worked` (`worked with eel`) outscored the actual specific model kits.
+
+---
+
+### Question 9: `d682f1a2`
+1. **Metadata:**
+   - **Question ID:** `d682f1a2`
+   - **Category:** `multi-session`
+   - **Query:** *"How many different types of food delivery services have I used recently?"*
+   - **Expected Answer:** `3` (Domino's Pizza, Uber Eats, Fresh Fusion).
+   - **Evidence Availability:** 3 supporting evidence facts across distinct sessions.
+2. **Fact Location in Original Sessions:**
+   - Fact 1 (Session 34, Turn 3, user): *"I've been relying on food delivery services a lot lately - I had Domino's Pizza three times last week!"*
+   - Fact 2 (Session 37, Turn 3, user): *"By the way, my weekends have been all about Uber Eats lately, it's been a lifesaver."*
+   - Fact 3 (Session 46, Turn 3, user): *"I've been really busy lately and have been relying on food delivery services, like this new one I found called Fresh Fusion - they have some great pre-made meals."*
+3. **Ingestion & Memory Formation Survival:**
+   - All 3 facts survived cleanly into `archive_store`:
+     - Domino's: `c69cecdd` (*"By the way, I've been relying on food delivery services a lot lately - I had Domino's Pizza three times last week!"*)
+     - Uber Eats: `e399a398` (*"By the way, my weekends have been all about Uber Eats lately, it's been a lifesaver."*)
+     - Fresh Fusion: `9f80a9f6` (*"By the way, I've been really busy lately and have been relying on food delivery services, like this new one I found called Fresh Fusion..."*)
+4. **Residency at Retrieval Time:**
+   - Reside in `archive_store` (active store capped under 500-token budget across 47 sessions).
+   - Lifecycle Status: All three are `ACTIVE`.
+5. **Retrieval Rank, Score & Context Inclusion:**
+   - **Rank 1 (Score 0.5140, Rel 0.3554):** **`c69cecdd` [HIT - Fact 1: Domino's Pizza]**
+   - **Rank 2 (Score 0.5030, Rel 0.3354):** **`9f80a9f6` [HIT - Fact 3: Fresh Fusion]**
+   - Rank 3 (Score 0.4996, Rel 0.2447): Distractor (`consumers often have many different identifiers`)
+   - Rank 4 (Score 0.4985, Rel 0.2427): Distractor (`questions which related to different aspects`)
+   - Rank 5 (Score 0.4639, Rel 0.2643): Distractor (`different types of cookies`)
+   - **Fact 2 (`e399a398`, Uber Eats):** Relevance = `0.0670` ($< 0.18$). Excluded below threshold.
+   - **Context Inclusion:** 5 / 5 retrieved items entered context (194 / 256 tokens).
+6. **Generated Response & Answer Metrics:**
+   - **Response:** Simulated response via `FakeLLMAdapter` (Exact Match: 0.0, Substring: 0.0, F1: 0.0).
+7. **Retrieval Metrics:**
+   - **Recall@5:** `0.6667` (Denominator: 2 hits / 3 ground-truth facts)
+   - **Precision@5:** `0.40` (Denominator: 2 hits / 5 retrieved items)
+   - **MRR:** `1.00` (Denominator: 1 / 1st rank)
+8. **Confirmed Reason for Outcome:**
+   - **Entity-Level Omission:** Domino's (`c69cecdd`) and Fresh Fusion (`9f80a9f6`) both explicitly repeated the exact phrase `"food delivery services"`, securing Rank 1 and Rank 2. Fact 2 (*"my weekends have been all about Uber Eats lately, it's been a lifesaver"*) named the delivery service entity (*Uber Eats*), but omitted the generic phrase `"food delivery services"`. Without domain entity knowledge bridging *Uber Eats* to *food delivery*, its content overlap was 0.0 and it fell below the 0.18 threshold.
+
+---
+
+### Question 10: `8979f9ec`
+1. **Metadata:**
+   - **Question ID:** `8979f9ec`
+   - **Category:** `multi-session`
+   - **Query:** *"What is the total number of lunch meals I got from the chicken fajitas and lentil soup?"*
+   - **Expected Answer:** `"8 meals"` (3 from chicken fajitas + 5 from lentil soup).
+   - **Evidence Availability:** 2 supporting evidence facts across distinct sessions.
+2. **Fact Location in Original Sessions:**
+   - Fact 1 (Session 21, Turn 1, user): *"By the way, I just had the best lunch today - I finished off the last of my chicken fajitas with sautéed onions and bell peppers that I made last week. This is the third meal I got from my chicken fajitas."*
+   - Fact 2 (Session 30, Turn 3, user): *"I just made a big batch of lentil soup that lasted me for 5 lunches, so I'm looking for something similar."*
+3. **Ingestion & Memory Formation Survival:**
+   - Both facts survived into `archive_store`:
+     - Fajitas propositions: `09039ac4` (*"This is the third meal I got from my chicken fajitas."*) and `728e399d` (*"By the way, I just had the best lunch today - I finished off the last of my chicken fajitas..."*).
+     - Lentil soup proposition: `2ffa2f5a` (*"I just made a big batch of lentil soup that lasted me for 5 lunches, so I'm looking for something similar."*).
+4. **Residency at Retrieval Time:**
+   - Reside in `archive_store` (active pool capped under 500-token budget across 43 sessions).
+   - Lifecycle Status: `09039ac4` (`ACTIVE`), `728e399d` (`TEMPORARY`), `2ffa2f5a` (`TEMPORARY`).
+5. **Retrieval Rank, Score & Context Inclusion:**
+   - **Rank 1 (Score 0.5793, Rel 0.3895):** **`09039ac4` [HIT - Fact 1: Chicken fajitas third meal]**
+   - **Rank 2 (Score 0.4923, Rel 0.3305):** **`728e399d` [HIT - Fact 1: Chicken fajitas lunch]**
+   - Rank 3 (Score 0.4875, Rel 0.2226): Distractor (`recipes for chicken fajitas`)
+   - Rank 4 (Score 0.4803, Rel 0.2095): Distractor (`friction between dry chicken manure`)
+   - Rank 5 (Score 0.4411, Rel 0.2228): Distractor (`chicken fajitas with soy sauce`)
+   - **Fact 2 (`2ffa2f5a`, Lentil soup 5 lunches):** Score: `0.4350` (Relevance: `0.1996`). Placed at **Rank 7**, just 0.006 points below the Rank 5 cutoff.
+   - **Context Inclusion:** 5 / 5 retrieved items entered context (185 / 256 tokens).
+6. **Generated Response & Answer Metrics:**
+   - **Response:** Simulated response via `FakeLLMAdapter` (Exact Match: 0.0, Substring: 0.0, F1: 0.0).
+7. **Retrieval Metrics:**
+   - **Reported Recall@5:** `1.00`* (Evaluator artifact: 2 memory hits / 2 evidence items, but both hits were propositions of Fact 1).
+   - **True Ground-Truth Coverage:** `0.50` (1 of 2 unique evidence facts retrieved: Fajitas in context, Lentil soup at Rank 7).
+   - **Precision@5:** `0.40` (2 hits / 5 retrieved items).
+   - **MRR:** `1.00` (1 / 1st rank).
+8. **Confirmed Reason for Outcome:**
+   - **Topic Imbalance in Compound Query:** The query asks about both `"chicken fajitas"` and `"lentil soup"`. Because `chicken` and `fajitas` appeared across multiple conversational sessions, chicken fajitas distractors (recipes, soy sauce, manure friction) occupied Ranks 1 through 5, pushing the valid lentil soup memory to Rank 7.
+
+---
+
+## Resource & Latency Profiling (Batch 2 Empirical Data)
+
+| Metric | Q6 (`bc149d6b`) | Q7 (`5a7937c8`) | Q8 (`gpt4_59c863d7`) | Q9 (`d682f1a2`) | Q10 (`8979f9ec`) | Batch Mean |
+|---|---|---|---|---|---|---|
+| **Ingestion Latency** | 9,508.42 ms | 14,932.66 ms | 20,239.86 ms | 17,298.18 ms | 19,976.87 ms | **16,391.20 ms** |
+| **Retrieval Latency** | 517.46 ms | 1,121.96 ms | 782.82 ms | 1,003.70 ms | 1,407.59 ms | **966.71 ms** |
+| **Generation Latency** | 0.03 ms | 0.08 ms | 0.06 ms | 0.05 ms | 0.09 ms | **0.06 ms** |
+| **Total Pipeline Latency** | 517.49 ms | 1,122.04 ms | 782.88 ms | 1,003.75 ms | 1,407.68 ms | **966.77 ms** |
+| **Context Tokens Used** | 174 / 256 | 0 / 256 | 155 / 256 | 194 / 256 | 185 / 256 | **141.6 tokens** |
+| **Memory Store Tokens** | 496 / 500 | 491 / 500 | 465 / 500 | 487 / 500 | 489 / 500 | **485.6 tokens** |
+
+### Latency & Store Observations:
+1. **Archive Candidate Scale:** For multi-session benchmark examples (42–47 sessions), total archive proposition count reaches 1,000–1,350 items. Linear scoring across 1,300 candidates takes ~0.7 to 1.4 seconds.
+2. **Budget Stability:** Memory tokens remain strictly bounded between 465 and 496 tokens against the 500-token cap across all multi-session runs.
+
+---
+
+## Confirmed Findings vs. Hypotheses
+
+### Confirmed Findings:
+1. **Multi-Session Multi-Fact Aggregation:** In single-session questions (Batch 1), retrieving a single proposition achieved Recall=1.0. In multi-session questions (Batch 2), queries require 2 to 5 distinct facts from disparate sessions. When one fact matches strong query keywords while another uses natural paraphrasing, the second fact is often displaced.
+2. **Threshold Cutoff Pathology on Multi-Token Queries (Q7):** In queries with 7 or more content words, matching 1 valid keyword (e.g. `December`) yields an overlap ratio of $1/7 = 0.143$, producing relevance $< 0.18$. This causes legitimate memories to be dropped entirely, leading to zero retrieved results for Q7.
+3. **Evaluator Recall Counting Artifact (Q10):** In `evaluate_retrieval_quality`, `matches_found` counts retrieved memories rather than unique ground-truth evidence items. When two propositions from the same evidence fact are retrieved, `matches_found` increments to 2, reporting Recall=1.0 even when the second required fact was not retrieved.
+4. **Lexical Synonym Gaps (Q6, Q8, Q9):** Common transactional synonyms (`bought` vs `purchased`), entity names without category nouns (`Uber Eats` without `food delivery`), and verb inflections (`working` vs `worked`) create zero keyword intersections.
+
+### Hypotheses for Targeted Improvement (For User Review):
+1. **Adaptive Query-Length Relevance Cutoff:** Scaling the minimum relevance threshold dynamically based on query length (e.g. $\min(0.18, 1.2 / |Q_{\text{content}}|)$) would allow Q7's dated December events to qualify without admitting noise.
+2. **Purchase Synonym Bridging:** Expanding synonym equivalence to `{bought, purchased, bought, got}` (analogous to the expense synonyms `{cost, fee, price, paid}`) would bridge Q6's scratch grains.
+3. **Compound Query Sub-Clause Retrieval / Diversification:** For queries containing compound conjuncts (e.g. *"chicken fajitas AND lentil soup"*), retrieving top items per sub-clause would ensure both topics are represented in the top 5.
