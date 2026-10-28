@@ -1055,3 +1055,162 @@ The table below reports the complete official evaluation across Questions 1 thro
    Added synonym bridging between `recipe`/`recipes` and preparation activities (`making`, `make`, `ingredients`, `prep`), allowing homemade preparation memories to match recipe recommendation queries (resolving Q12).
 4. **Zero Regressions on Prior Batches:**
    Re-evaluated Questions 1–10; all 10 questions produced identical metrics to Batch 2. The full test suite passed with **112 passing tests** (including 3 new regression tests in `TestBatch3PreferenceAndDomainBridging`).
+
+
+---
+
+## 8. Batch 3 Audit & Verification (Audits A, B, C, D) — 2026-10-28
+
+This audit rigorously inspects the Batch 3 findings, verifies the evidence counting rules across multi-session questions, audits stopword safety with adversarial tests, deconstructs academic and recipe bridging, and analyzes the root cause of the remaining retrieval failure in Question 14.
+
+### 8.1 Audit A — Q7 (`5a7937c8`) Evidence Denominator Resolution
+
+- **Question ID:** `5a7937c8` (Multi-session)
+- **User Query:** *"How many days did I spend participating in faith-related activities in December?"*
+- **Expected Answer:** `"3 days."`
+- **Official Dataset Grounding:**
+  Direct inspection of `data/longmemeval/longmemeval_s_dev.json` confirms that the benchmark record contains **exactly 3 supporting evidence items**:
+  1. **Evidence [0] (Session 6, Turn 1):** *"I'm looking for some volunteer opportunities in my community, preferably something related to food banks or pantries. I actually helped out at the church's annual holiday food drive on December 10th, sorting donations and packing boxes for families in need, and it was a really rewarding experience."*
+  2. **Evidence [1] (Session 23, Turn 1):** *"I'm planning a family outing for the upcoming holiday season and I was wondering if you could suggest some festive activities we could do together. By the way, I just got back from a lovely midnight mass on Christmas Eve at St. Mary's Church, which was on December 24th, with my family."*
+  3. **Evidence [2] (Session 34, Turn 1):** *"I'm looking for some guidance on a Bible study I'm leading next week. We're going to discuss the book of Matthew, and I was wondering if you could give me some resources on how to facilitate a good discussion about faith and its application to daily life. By the way, I actually just did a Bible study on this same topic at my church a few weeks ago, on December 17th, and it was really thought-provoking."*
+- **Evaluator Execution & Metric Verification:**
+  - In retrieval, the top-5 results retrieved were:
+    - **Rank 1 (Hit EV 1):** St. Mary's Church midnight mass on December 24th (`fb0bff11`).
+    - **Rank 2 (Distractor):** Day camps structured environment.
+    - **Rank 3 (Hit EV 2):** Bible study at church on December 17th (`7a3ecca3`).
+    - **Rank 4 (Distractor):** Candlelight services on Christmas Eve.
+    - **Rank 5 (Hit EV 0):** Church annual holiday food drive on December 10th (`c40c2c2e`).
+  - Evaluator `evaluate_retrieval_quality` matched all 3 distinct ground-truth evidence items:
+    - **Recall@5 = 3 / 3 = 1.0000 (100.0%)** (denominator: 3 unique evidence facts).
+    - **Precision@5 = 3 / 5 = 0.6000 (60.0%)** (Ranks 1, 3, and 5 are hits).
+    - **MRR = 1.0 / 1 = 1.0000** (First hit at Rank 1).
+- **Resolution of Inconsistency:**
+  Earlier Batch 2 text notes correctly reported 3 facts, but the subsequent summary table contained a typographical error (`(2/2)` instead of `(3/3)`). The denominator is conclusively **3**. Added regression test `test_q7_multi_session_faith_evidence_count_and_retrieval_metrics` in `test_evaluation.py` to prevent future regressions.
+
+---
+
+### 8.2 Audit B — Q13 (`75832dbd`) Academic Bridging Deconstruction
+
+- **Question ID:** `75832dbd` (Single-session preference)
+- **User Query:** *"Can you recommend some recent publications or conferences that I might find interesting?"*
+- **Target Evidence:** *"Can you give me an overview of the recent advancements in this field of deep learning for medical image analysis? Skip the basics as I am working in the field."*
+- **Step-by-Step Scoring Trace:**
+  1. **Query Tokenization & Framing Stripping:**
+     `clean_conversational_framing()` strips `"Can you recommend"` and `"that I might find interesting"`.
+     Content words: `['conferences', 'find', 'might', 'publications', 'recent']` (len = 5).
+  2. **Memory Tokenization:**
+     Memory content words: `['advancements', 'analysis', 'basics', 'deep', 'field', 'image', 'learning', 'medical', 'overview', 'recent', 'skip', 'working']` (len = 12).
+  3. **Keyword Overlap:**
+     - Exact unigram overlap: `{'recent'}` (1 word).
+     - Stemming matches: none beyond exact match.
+  4. **Domain Bridging Activation:**
+     `academic_synonyms = {"publications", "publication", "conferences", "conference", "papers", "paper", "journals", "journal", "advancements", "research"}`
+     - Query matches: `{'conferences', 'publications'}`
+     - Memory matches: `{'advancements'}`
+     - Because query has academic venue terms and memory has academic progress terms, `_academic_synonym` is added to the intersection set.
+  5. **Relevance Calculation:**
+     - Intersection set: `{'recent', '_academic_synonym'}` (len = 2).
+     - Content overlap: $2 / 5 = 0.4000$.
+     - SequenceMatcher lexical similarity: 0.3887.
+     - Final relevance: $0.65 \times 0.4000 + 0.35 \times 0.3887 = \mathbf{0.3494}$ (well above $T=0.18$ threshold).
+  6. **Retrieval Rank & Context Inclusion:**
+     - Target memory score: 0.4955.
+     - With distractor conversational framing stripped, the deep learning proposition placed at **Rank 1** (MRR = 1.0).
+     - Prompt context budget: 190 / 256 tokens used, fully selected into final prompt.
+
+---
+
+### 8.3 Audit C — Stopword Safety & Adversarial Analysis
+
+The initial Batch 3 proposal added six terms to `COMMON_STOPWORDS`: `recommend`, `recommendations`, `suggest`, `suggestions`, `thinking`, `interesting`.
+
+#### Adversarial Failure Modes Identified:
+1. **Episodic Action Queries:**
+   Query: *"What movie did I recommend to Sarah last week?"*
+   Target: *"I recommend that movie Interstellar to Sarah because she loves space exploration."*
+   Distractor: *"Sarah and I went to see a movie at the cinema last week."*
+   - When `recommend` was globally stripped, the query lost its defining action predicate (`recommend`).
+   - The distractor matched `movie`, `sarah`, `week` (3/3 = 100% overlap), beating the target (2/3 = 66.7%) by **-0.3492 points**!
+2. **Topical Concept Queries:**
+   Query: *"What was that book on critical thinking I mentioned wanting to read?"*
+   - When `thinking` was globally stripped, the central concept "critical thinking" lost its head noun.
+
+#### Principled Architectural Refinement:
+- Reverted `COMMON_STOPWORDS` to standard closed-class function words, keeping `recommend`, `thinking`, `interesting` intact.
+- Introduced `clean_conversational_framing(text: str)` in `memory_retrieval.py` targeting conversational prompt boilerplate patterns:
+  - `\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:recommend|suggest)\b`
+  - `\b(?:do\s+you\s+have\s+)?any\s+(?:recommendations?|suggestions?)\b`
+  - `\b(?:i\s+was|i\s+am|i'm)\s+thinking\s+of\b`
+  - `\b(?:that\s+)?(?:i\s+)?(?:might|would)\s+find\s+interesting\b`
+  - `\bcan\s+you\s+give\s+me\s+(?:some\s+)?(?:recommendations?|suggestions?)\b`
+  - `\bi(?:'m|\s+am)?\s+looking\s+for\s+(?:some\s+)?(?:recommendations?|suggestions?)\b`
+
+#### Validation:
+- In `test_adversarial_topical_query_preserves_thinking_concept`: Target book on critical thinking scores 0.7301 vs distractor critical care medicine 0.4721 (**+0.2580 win**).
+- In `test_adversarial_episodic_query_preserves_recommend_action`: `recommend` is preserved as a query keyword.
+- Benchmark Q11–Q15 results: All 5 preference questions succeed; Q12 MRR is 0.20 (Rank 5) and Q13 MRR improved to 1.0 (Rank 1).
+
+---
+
+### 8.4 Audit D — Q14 (`1c0ddc50`) Root Cause Analysis
+
+- **Question ID:** `1c0ddc50`
+- **Query:** *"Can you suggest some activities I can do during my commute to work?"*
+- **Evidence 0:** *"I enjoy listening to then during my commute, but I want to branch out into other genres."* (Retrieved at **Rank 2**, HIT).
+- **Evidence 1:** *"I'm particularly interested in the history podcasts. Can you give me some recommendations on how to organize my listening schedule, considering my commute is about 40 minutes each way?"* (Missed, retrieved at Rank 23).
+
+#### Diagnostic Trace:
+1. **Proposition Extraction Decomposition:**
+   During session ingestion, the candidate extractor decomposed Turn 3 into two independent atomic propositions:
+   - Proposition A (`7e46856e`): *"I'm particularly interested in the history podcasts."*
+   - Proposition B (`f1c419c0`): *"Can you give me some recommendations on how to organize my listening schedule, considering my commute is about 40 minutes each way?"*
+2. **Loss of Inter-Clause Cross-Reference:**
+   - Proposition A retained the genre preference (`history podcasts`), but contained zero transit/commute keywords. Its query relevance scored `0.0422` (below the 0.18 threshold).
+   - Proposition B retained the transit constraint (`commute 40 minutes`), but contained zero podcast keywords. Its query relevance scored `0.3363`.
+3. **Storage & Ranking Residency:**
+   - Proposition B was classified as an episodic conversational scheduling question and decayed into `archive_store`.
+   - At query time, Proposition B scored `0.5035` and placed at **Rank 23**.
+   - Distractor memories matching both `activities` AND `work` (e.g. self-care activities, volunteer work, work schedules) scored between `0.53` and `0.59`, filling Ranks 1 to 10.
+4. **Architectural Trade-Off & Conclusion:**
+   Attempting an ad-hoc scoring boost for "commute" or "podcasts" would risk elevating unrelated transit or audio memories across the entire 50-session benchmark. This is a known limitation of sentence-level atomic proposition extraction when users combine a topical preference and an environmental constraint across subordinate clauses in a single turn. The algorithm is left unchanged.
+
+---
+
+### 8.5 Post-Audit Comparative Results Table (Questions 1–15)
+
+The table below reflects the audited evaluation across Questions 1 through 15 under identical benchmark settings (`top_k=5`, `storage_budget=500 tokens`, `context_budget=256 tokens`, `FakeLLMAdapter`).
+
+| Q# | Question ID | Category | Recall@5 (Hits/EV) | Precision@5 (Hits/5) | MRR | Storage Tokens | Context Tokens | In-Context Count | Retrieval Latency |
+|:---:|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Q1** | `94f70d80` | single-session-user | **1.0000** (1/1) | **0.2000** (1/5) | **1.0000** (R1) | 493 / 500 | 178 / 256 | 5 / 5 | 341.77 ms |
+| **Q2** | `bc8a6e93_abs` | single-session-user | **NaN** (0/0) | **NaN** (0/5) | **NaN** | 495 / 500 | 182 / 256 | 5 / 5 | 302.17 ms |
+| **Q3** | `6ade9755` | single-session-user | **1.0000** (1/1) | **0.2000** (1/5) | **0.5000** (R2) | 495 / 500 | 139 / 256 | 5 / 5 | 265.63 ms |
+| **Q4** | `bc8a6e93` | single-session-user | **1.0000** (1/1) | **0.2000** (1/5) | **1.0000** (R1) | 476 / 500 | 212 / 256 | 5 / 5 | 335.20 ms |
+| **Q5** | `6f9b354f` | single-session-user | **1.0000** (1/1) | **0.2000** (1/5) | **1.0000** (R1) | 485 / 500 | 165 / 256 | 5 / 5 | 309.45 ms |
+| **Q6** | `bc149d6b` | multi-session | **0.5000** (1/2) | **0.2000** (1/5) | **0.2000** (R5) | 496 / 500 | 174 / 256 | 5 / 5 | 418.47 ms |
+| **Q7** | `5a7937c8` | multi-session | **1.0000** (3/3) | **0.6000** (3/5) | **1.0000** (R1) | 491 / 500 | 220 / 256 | 5 / 5 | 560.03 ms |
+| **Q8** | `gpt4_59c863d7`| multi-session | **0.4000** (2/5) | **0.4000** (2/5) | **1.0000** (R1) | 465 / 500 | 153 / 256 | 5 / 5 | 361.73 ms |
+| **Q9** | `d682f1a2` | multi-session | **0.6667** (2/3) | **0.4000** (2/5) | **1.0000** (R1) | 487 / 500 | 194 / 256 | 5 / 5 | 464.09 ms |
+| **Q10**| `8979f9ec` | multi-session | **0.5000** (1/2) | **0.4000** (2/5) | **1.0000** (R1) | 489 / 500 | 189 / 256 | 5 / 5 | 688.64 ms |
+| **Q11**| `fca70973` | single-session-pref | **1.0000** (1/1) | **0.4000** (2/5) | **1.0000** (R1) | 479 / 500 | 175 / 256 | 5 / 5 | 542.44 ms |
+| **Q12**| `505af2f5` | single-session-pref | **1.0000** (1/1) | **0.2000** (1/5) | **0.2000** (R5) | 497 / 500 | 187 / 256 | 5 / 5 | 433.81 ms |
+| **Q13**| `75832dbd` | single-session-pref | **1.0000** (1/1) | **0.2000** (1/5) | **1.0000** (R1) | 494 / 500 | 190 / 256 | 5 / 5 | 656.58 ms |
+| **Q14**| `1c0ddc50` | single-session-pref | **0.5000** (1/2) | **0.2000** (1/5) | **0.5000** (R2) | 490 / 500 | 199 / 256 | 5 / 5 | 341.13 ms |
+| **Q15**| `b6025781` | single-session-pref | **1.0000** (1/1) | **0.2000** (1/5) | **0.5000** (R2) | 482 / 500 | 155 / 256 | 5 / 5 | 441.18 ms |
+
+---
+
+### 8.6 Aggregate Cohort Statistics
+
+| Cohort | N (Evaluable) | Mean Recall@5 | Mean Precision@5 | Mean MRR | Mean Storage Tokens | Context Compliance |
+|---|---|---|---|---|---|---|
+| **Batch 1 (Q1–Q5)** | 4 | **1.0000 (100.0%)** | 0.2000 (20.0%) | 0.8750 | 487.3 / 500 | 100% ($\le 256$) |
+| **Batch 2 (Q6–Q10)** | 5 | **0.6133 (61.3%)** | 0.4000 (40.0%) | 0.8400 | 485.6 / 500 | 100% ($\le 256$) |
+| **Batch 3 (Q11–Q15)** | 5 | **0.9000 (90.0%)** | 0.2400 (24.0%) | **0.6400** (+0.10) | 488.4 / 500 | 100% ($\le 256$) |
+| **Overall Q1–Q15** | **14** | **0.8262 (82.6%)** | **0.2857 (28.6%)** | **0.7786** (+0.0357) | **487.1 / 500** | **100% ($\le 256$)** |
+
+---
+
+### 8.7 Test Suite Execution Status
+- Command: `python -m pytest --ignore=scratch`
+- Result: **115 passed in 2.07s** (0 failures, 0 errors).

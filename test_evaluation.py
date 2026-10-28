@@ -137,6 +137,31 @@ class TestEvaluationMetrics(unittest.TestCase):
         hist_pred = check_stale_memory_error("You worked at OpenAI previously.", [mem], is_historical=True)
         self.assertEqual(hist_pred, 0.0)
 
+    def test_q7_multi_session_faith_evidence_count_and_retrieval_metrics(self):
+        """
+        Regression test for Audit A: Question 7 (5a7937c8) in longmemeval_dev has exactly
+        3 distinct supporting evidence items (December 10 food drive, December 17 Bible study, December 24 mass).
+        Retrieval of all 3 distinct items yields Recall@5 = 1.0 (3/3), Precision@5 = 0.60 (3/5), and MRR = 1.0.
+        """
+        from benchmark_dataset import load_benchmark_dataset
+        dataset = load_benchmark_dataset("longmemeval_dev")
+        q7 = next((ex for ex in dataset if ex.id == "5a7937c8"), None)
+        self.assertIsNotNone(q7)
+        self.assertEqual(len(q7.supporting_evidence), 3)
+
+        # Simulated retrieved memories corresponding to the 3 faith activities and 2 distractors
+        m1 = MemoryItem(id="m1", content="St. Mary's Church, which was on December 24th, with my family.", memory_type=MemoryType.EPISODIC, source_session_id="s23", timestamp=100.0)
+        m2 = MemoryItem(id="m2", content="Day camps offer a structured environment with activities.", memory_type=MemoryType.EPISODIC, source_session_id="s10", timestamp=100.0)
+        m3 = MemoryItem(id="m3", content="I actually just did a Bible study on this same topic at my church a few weeks ago, on December 17th.", memory_type=MemoryType.EPISODIC, source_session_id="s34", timestamp=100.0)
+        m4 = MemoryItem(id="m4", content="Many churches offer candlelight services on Christmas Eve.", memory_type=MemoryType.EPISODIC, source_session_id="s23", timestamp=100.0)
+        m5 = MemoryItem(id="m5", content="I actually helped out at the church's annual holiday food drive on December 10th.", memory_type=MemoryType.EPISODIC, source_session_id="s6", timestamp=100.0)
+
+        ret = evaluate_retrieval_quality([m1, m2, m3, m4, m5], q7.supporting_evidence)
+        self.assertEqual(ret["recall_at_k"], 1.0)
+        self.assertEqual(ret["precision_at_k"], 0.6)
+        self.assertEqual(ret["mrr"], 1.0)
+
+
 
 class TestExperimentHarness(unittest.TestCase):
     def test_harness_run_small_suite(self):

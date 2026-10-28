@@ -48,9 +48,30 @@ COMMON_STOPWORDS: Set[str] = {
     "should", "so", "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves",
     "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until",
     "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
-    "why", "with", "would", "you", "your", "yours", "yourself", "yourselves", "help", "please", "s", "t", "d", "m", "ll", "ve", "re", "recommend", "recommendations", "suggest", "suggestions", "thinking", "interesting"
+    "why", "with", "would", "you", "your", "yours", "yourself", "yourselves", "help", "please", "s", "t", "d", "m", "ll", "ve", "re"
 }
 
+
+
+# Conversational request framing patterns (prompts asking assistant for ideas/advice)
+# Stripped from query and memory content during keyword extraction to prevent meta-conversational filler
+# from dominating substantive topical keywords, without globally deleting topical words like 'thinking' or 'recommend'.
+CONVERSATIONAL_FRAMING_PATTERNS = [
+    r"\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:recommend|suggest)\b",
+    r"\b(?:do\s+you\s+have\s+)?any\s+(?:recommendations?|suggestions?)\b",
+    r"\b(?:i\s+was|i\s+am|i'm)\s+thinking\s+of\b",
+    r"\b(?:that\s+)?(?:i\s+)?(?:might|would)\s+find\s+interesting\b",
+    r"\bcan\s+you\s+give\s+me\s+(?:some\s+)?(?:recommendations?|suggestions?)\b",
+    r"\bi(?:'m|\s+am)?\s+looking\s+for\s+(?:some\s+)?(?:recommendations?|suggestions?)\b",
+]
+
+
+def clean_conversational_framing(text: str) -> str:
+    """Removes conversational request scaffolding (e.g. 'Can you recommend', 'Any suggestions') from text."""
+    cleaned = text
+    for pat in CONVERSATIONAL_FRAMING_PATTERNS:
+        cleaned = re.sub(pat, " ", cleaned, flags=re.IGNORECASE)
+    return cleaned
 
 # ============================================================================
 # 1. Retrieval Configuration & Temporal Query Analysis
@@ -148,9 +169,13 @@ def compute_query_relevance(query: str, memory: MemoryItem) -> float:
     q_lower = query.lower()
     mem_lower = memory.content.lower()
 
+    # Strip conversational prompt framing (e.g. 'Can you recommend', 'I was thinking of')
+    q_cleaned = clean_conversational_framing(q_lower)
+    m_cleaned = clean_conversational_framing(mem_lower)
+
     # Extract non-stopword content words
-    q_tokens = set(re.findall(r"\b[a-z0-9_]+\b", q_lower))
-    m_tokens = set(re.findall(r"\b[a-z0-9_]+\b", mem_lower))
+    q_tokens = set(re.findall(r"\b[a-z0-9_]+\b", q_cleaned))
+    m_tokens = set(re.findall(r"\b[a-z0-9_]+\b", m_cleaned))
 
     q_content_words = q_tokens - COMMON_STOPWORDS
     m_content_words = m_tokens - COMMON_STOPWORDS

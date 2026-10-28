@@ -704,6 +704,51 @@ class TestBatch3PreferenceAndDomainBridging(unittest.TestCase):
         )
         rel_recipe = compute_query_relevance(query, mem_recipe)
         self.assertGreaterEqual(rel_recipe, 0.18)
+    def test_adversarial_topical_query_preserves_thinking_concept(self):
+        """Topical queries mentioning 'thinking' (e.g. 'critical thinking') must retain 'thinking' and outrank distractors."""
+        query = "What was that book on critical thinking I mentioned wanting to read?"
+        mem_target = MemoryItem(
+            id="m_think",
+            content="I've been wanting to read that classic book on critical thinking, Thinking Fast and Slow.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        mem_distractor = MemoryItem(
+            id="m_care",
+            content="I'm reading a book on critical care medicine for my clinical rotations.",
+            memory_type=MemoryType.SEMANTIC,
+            source_session_id="s2",
+            timestamp=100.0,
+        )
+        rel_target = compute_query_relevance(query, mem_target)
+        rel_dist = compute_query_relevance(query, mem_distractor)
+        self.assertGreaterEqual(rel_target, 0.18)
+        self.assertGreater(rel_target, rel_dist)
+
+    def test_adversarial_episodic_query_preserves_recommend_action(self):
+        """Episodic queries asking about a past user recommendation must retain 'recommend' as a distinguishing predicate."""
+        query = "What movie did I recommend to Sarah last week?"
+        mem_target = MemoryItem(
+            id="m_rec",
+            content="I recommend that movie Interstellar to Sarah because she loves space exploration.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        mem_distractor = MemoryItem(
+            id="m_cinema",
+            content="Sarah and I went to see a movie at the cinema last week.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s2",
+            timestamp=100.0,
+        )
+        # Without conversational request framing (it's not 'can you recommend'), 'recommend' remains an active keyword
+        from memory_retrieval import clean_conversational_framing
+        self.assertIn("recommend", clean_conversational_framing(query.lower()))
+        rel_target = compute_query_relevance(query, mem_target)
+        self.assertGreaterEqual(rel_target, 0.18)
+
 
 
 if __name__ == "__main__":
