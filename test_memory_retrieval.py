@@ -691,6 +691,7 @@ class TestBatch3PreferenceAndDomainBridging(unittest.TestCase):
         rel_dist = compute_query_relevance(query, mem_distractor)
 
         self.assertGreaterEqual(rel_academic, 0.18)
+        self.assertAlmostEqual(rel_academic, 0.5095, places=3)
         self.assertGreater(rel_academic, rel_dist)
 
     def test_culinary_recipe_bridging(self):

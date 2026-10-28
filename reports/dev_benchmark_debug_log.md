@@ -1089,35 +1089,45 @@ This audit rigorously inspects the Batch 3 findings, verifies the evidence count
 
 ---
 
-### 8.2 Audit B — Q13 (`75832dbd`) Academic Bridging Deconstruction
+### 8.2 Audit B - Q13 (`75832dbd`) Academic Bridging Deconstruction & Scoring Diagnosis
 
 - **Question ID:** `75832dbd` (Single-session preference)
 - **User Query:** *"Can you recommend some recent publications or conferences that I might find interesting?"*
-- **Target Evidence:** *"Can you give me an overview of the recent advancements in this field of deep learning for medical image analysis? Skip the basics as I am working in the field."*
-- **Step-by-Step Scoring Trace:**
+- **Target Evidence Turn:** Session 8, Turn 1 (*"Can you give me an overview of the recent advancements in this field of deep learning for medical image analysis? Skip the basics as I am working in the field."*)
+- **Target Memory Proposition (ID: `35ca3db7-1ddd-552a-b08b-4e4d4c4f5be0`):**
+  *"Can you give me an overview of the recent advancements in this field of deep learning for medical image analysis?"* (Sentence-split by candidate generator during ingestion).
+- **Verified Runtime Scoring Trace:**
   1. **Query Tokenization & Framing Stripping:**
-     `clean_conversational_framing()` strips `"Can you recommend"` and `"that I might find interesting"`.
-     Content words: `['conferences', 'find', 'might', 'publications', 'recent']` (len = 5).
+     `clean_conversational_framing()` strips `"Can you recommend"` and `"that I might find interesting"`, leaving `"   some recent publications or conferences  ?"`.
+     Query tokens: `['conferences', 'or', 'publications', 'recent', 'some']`.
+     Content words (excluding stopwords `or`, `some`): `['conferences', 'publications', 'recent']` (**len = 3**, as `find` and `might` were stripped inside the request boilerplate).
   2. **Memory Tokenization:**
-     Memory content words: `['advancements', 'analysis', 'basics', 'deep', 'field', 'image', 'learning', 'medical', 'overview', 'recent', 'skip', 'working']` (len = 12).
+     Memory content words: `['advancements', 'analysis', 'deep', 'field', 'give', 'image', 'learning', 'medical', 'overview', 'recent']` (**len = 10**).
   3. **Keyword Overlap:**
-     - Exact unigram overlap: `{'recent'}` (1 word).
+     - Exact unigram overlap: `{'recent'}` (len = 1).
      - Stemming matches: none beyond exact match.
   4. **Domain Bridging Activation:**
      `academic_synonyms = {"publications", "publication", "conferences", "conference", "papers", "paper", "journals", "journal", "advancements", "research"}`
      - Query matches: `{'conferences', 'publications'}`
      - Memory matches: `{'advancements'}`
-     - Because query has academic venue terms and memory has academic progress terms, `_academic_synonym` is added to the intersection set.
-  5. **Relevance Calculation:**
-     - Intersection set: `{'recent', '_academic_synonym'}` (len = 2).
-     - Content overlap: $2 / 5 = 0.4000$.
-     - SequenceMatcher lexical similarity: 0.3887.
-     - Final relevance: $0.65 \times 0.4000 + 0.35 \times 0.3887 = \mathbf{0.3494}$ (well above $T=0.18$ threshold).
-  6. **Retrieval Rank & Context Inclusion:**
-     - Target memory score: 0.4955.
-     - With distractor conversational framing stripped, the deep learning proposition placed at **Rank 1** (MRR = 1.0).
-     - Prompt context budget: 190 / 256 tokens used, fully selected into final prompt.
-
+     - Academic bridging activates, adding `'_academic_synonym'` to the intersection set.
+     - Total intersection set: `{'recent', '_academic_synonym'}` (**len = 2**).
+  5. **Exact Runtime Relevance Calculation:**
+     - Content overlap ratio: $2 / 3 = \mathbf{0.6667}$ (not $2/5$).
+     - Text similarity `compute_text_similarity(query, target_mem.content)` breakdown:
+       - Token Jaccard: $3 / 29 = 0.103448$ (intersection: `{'can', 'recent', 'you'}`)
+       - SequenceMatcher ratio: $0.331658$
+       - Combined `base_sim`: $0.5 \times 0.103448 + 0.5 \times 0.331658 = \mathbf{0.2176}$
+     - Final relevance:
+       $$\text{relevance} = 0.65 \times 0.666667 + 0.35 \times 0.217553 = 0.433333 + 0.076144 = \mathbf{0.5095}$$
+       (Matches `compute_query_relevance` runtime return value of `0.5095` exactly).
+     - *Arithmetic Note:* An earlier draft erroneously reported `0.3494` by conflating a 5-word pre-framing query length ($2/5 = 0.4000$) with SequenceMatcher alone ($0.3887$), producing an internal arithmetic contradiction. The verified runtime score is **`0.5095`**.
+  6. **Retrieval Rank & Resolution of Rank 2 vs. Rank 1:**
+     - Total retrieval score: $0.55 \times 0.5095 + 0.20 \times 0.6428 + 0.15 \times 1.0 + 0.10 \times 0.40 = \mathbf{0.5908}$.
+     - **Resolution of Historical Discrepancy:**
+       - *Pre-Audit / Batch 3 Initial Baseline (Commit `4ff62dd`):* Evaluated without `clean_conversational_framing()`. Query content words contained `find`, allowing distractor `199bb5b6` (*"Remember to research and visit these resources to find the most suitable options..."*) to match both `research` and `find`, scoring $0.4997$. The target scored $0.4955$, placing at **Rank 2**.
+       - *Post-Audit / Current Implementation (Commit `f0504f2`):* `clean_conversational_framing()` removed the request boilerplate `"that I might find interesting"`, stripping `find` and focusing content words to `['conferences', 'publications', 'recent']`. Distractor `199bb5b6` dropped down, while target content overlap rose to $2/3$, lifting relevance to $0.5095$ and total score to $0.5908$. The target memory decisively achieved **Rank 1** (MRR = 1.0).
+     - Context budget: Selected into prompt context at Rank 1 (5/5 memories, 190 / 256 tokens used).
 ---
 
 ### 8.3 Audit C — Stopword Safety & Adversarial Analysis
