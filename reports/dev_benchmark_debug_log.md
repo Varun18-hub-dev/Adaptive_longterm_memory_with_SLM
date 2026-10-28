@@ -735,35 +735,85 @@ All changes implemented in `memory_retrieval.py` are principled, generalizable, 
 
 ---
 
-## 4. Comprehensive Questions 1–10 Evaluation (Before vs. After)
+## 4. Comprehensive Questions 1–10 Evaluation (Consistency Audit & Final Results)
 
 All metrics below were empirically measured using the corrected unique-evidence evaluation harness on `eval-dev-benchmark-30q`.
 
-| Question ID | Category | Baseline Recall@5 | New Recall@5 | Baseline Prec@5 | New Prec@5 | Baseline MRR | New MRR | In-Context (Tokens) | Ret. Latency | Status & Notes |
+| Question ID | Category | Baseline Recall@5 | New Recall@5 | Baseline Prec@5 | New Prec@5 | Baseline MRR | New MRR | In-Context (Tokens) | Ret. Latency | Status & Audited Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **Q1 (`94f70d80`)** | single-session-user | 1.00 (1/1) | **1.00 (1/1)** | 0.20 (1/5) | **0.20 (1/5)** | 1.00 | **1.00** | 5/5 (193/256) | 497.57 ms | **No regression.** Rank 1 hit (IKEA bookshelf). |
-| **Q2 (`bc8a6e93_abs`)** | single-session-user | NaN (0/0) | **NaN (0/0)** | NaN (0/5) | **NaN (0/5)** | NaN | **NaN** | 5/5 (212/256) | 416.19 ms | **No regression.** Absence query transparently preserved as NaN. |
-| **Q3 (`6ade9755`)** | single-session-user | 1.00 (1/1) | **1.00 (1/1)** | 0.20 (1/5) | **0.20 (1/5)** | 0.50 | **0.50** | 5/5 (177/256) | 314.20 ms | **No regression.** Rank 2 hit (Serenity Yoga). |
-| **Q4 (`bc8a6e93`)** | single-session-user | 1.00 (1/1) | **1.00 (1/1)** | 0.20 (1/5) | **0.20 (1/5)** | 1.00 | **1.00** | 5/5 (194/256) | 438.91 ms | **No regression.** Rank 1 hit (lemon desserts). |
-| **Q5 (`6f9b354f`)** | single-session-user | 1.00 (1/1) | **1.00 (1/1)** | 0.20 (1/5) | **0.20 (1/5)** | 1.00 | **1.00** | 5/5 (182/256) | 409.78 ms | **No regression.** Rank 1 hit (repainted kitchen). |
-| **Q6 (`bc149d6b`)** | multi-session | 0.50 (1/2) | **0.50 (1/2)** | 0.20 (1/5) | **0.20 (1/5)** | 0.20 | **0.20** | 5/5 (174/256) | 600.20 ms | Rank 5 hit (layer feed 50-lb). Scratch grains at score 0.4525 (Rank 7). |
-| **Q7 (`5a7937c8`)** | multi-session | 0.00 (0/3) | **1.00 (3/3)** | 0.00 (0/5) | **0.60 (3/5)** | 0.00 | **1.00** | 5/5 (171/256) | 645.63 ms | **Massive Gain (+1.00 Recall).** All 3 faith activities in top 5 (Ranks 1, 3, 5). |
+| **Q1 (`94f70d80`)** | single-session-user | 1.00 (1/1) | **1.00 (1/1)** | 0.20 (1/5) | **0.20 (1/5)** | 1.00 | **1.00** | 5/5 (193/256) | 497.57 ms | **Zero regression.** Rank 1 hit (IKEA bookshelf assembly time: 4 hours). |
+| **Q2 (`bc8a6e93_abs`)** | single-session-user | NaN (0/0) | **NaN (0/0)** | NaN (0/5) | **NaN (0/5)** | NaN | **NaN** | 5/5 (212/256) | 416.19 ms | **Zero regression.** Absence query transparently preserved as NaN. |
+| **Q3 (`6ade9755`)** | single-session-user | 1.00 (1/1) | **1.00 (1/1)** | 0.20 (1/5) | **0.20 (1/5)** | 0.50 | **0.50** | 5/5 (177/256) | 314.20 ms | **Zero regression.** Rank 2 hit (Serenity Yoga). |
+| **Q4 (`bc8a6e93`)** | single-session-user | 1.00 (1/1) | **1.00 (1/1)** | 0.20 (1/5) | **0.20 (1/5)** | 1.00 | **1.00** | 5/5 (194/256) | 438.91 ms | **Zero regression.** Rank 1 hit (niece's birthday party lemon blueberry cake). |
+| **Q5 (`6f9b354f`)** | single-session-user | 1.00 (1/1) | **1.00 (1/1)** | 0.20 (1/5) | **0.20 (1/5)** | 1.00 | **1.00** | 5/5 (182/256) | 409.78 ms | **Zero regression.** Rank 1 hit (bedroom walls repainted lighter shade of gray). |
+| **Q6 (`bc149d6b`)** | multi-session | 0.50 (1/2) | **0.50 (1/2)** | 0.20 (1/5) | **0.20 (1/5)** | 0.20 | **0.20** | 5/5 (174/256) | 600.20 ms | Rank 5 hit (layer feed 50-lb). Scratch grains scored 0.4525 (Rank 7), 0.0062 points behind Rank 5. |
+| **Q7 (`5a7937c8`)** | multi-session | 0.00 (0/3) | **1.00 (3/3)** | 0.00 (0/5) | **0.60 (3/5)** | 0.00 | **1.00** | 5/5 (171/256) | 645.63 ms | **Major Gain (+1.00 Recall).** All 3 faith activities in top 5 (Ranks 1, 3, 5). |
 | **Q8 (`gpt4_59c863d7`)** | multi-session | 0.20 (1/5) | **0.40 (2/5)** | 0.20 (1/5) | **0.40 (2/5)** | 1.00 | **1.00** | 5/5 (163/256) | 588.49 ms | **Gain (+0.20 Recall).** Suffix stemming retrieved Revell F-15 & model kits weathering. |
 | **Q9 (`d682f1a2`)** | multi-session | 0.6667 (2/3) | **0.6667 (2/3)** | 0.40 (2/5) | **0.40 (2/5)** | 1.00 | **1.00** | 5/5 (194/256) | 580.70 ms | Domino's & Fresh Fusion hits in Ranks 1 and 2. |
-| **Q10 (`8979f9ec`)** | multi-session | 0.50 (1/2) | **0.50 (1/2)** | 0.40 (2/5) | **0.40 (2/5)** | 1.00 | **1.00** | 5/5 (185/256) | 804.09 ms | Chicken fajitas hits at Ranks 1 & 3; Lentil soup (5 lunches) in context at Rank 2. |
+| **Q10 (`8979f9ec`)** | multi-session | 0.50 (1/2) | **0.50 (1/2)** | 0.40 (2/5) | **0.40 (2/5)** | 1.00 | **1.00** | 5/5 (185/256) | 804.09 ms | Rank 1 & 3 hits (fajitas meals). Lentil soup (5 lunches) in context at Rank 2. |
 
 ---
 
-## 5. Summary Aggregate Metrics
+## 5. Detailed Consistency Audits
+
+### 5.1 Q10 (`8979f9ec`) Discrepancy Resolution
+- **Ranked Retrieval Output:**
+  - Rank 1 (Score 0.6190, Rel 0.4617): `09039ac4` (*"This is the third meal I got from my chicken fajitas."*) -> **HIT on EV 0**.
+  - Rank 2 (Score 0.5199, Rel 0.3661): `b992a574` (*"Speaking of meal prep, I recently made a big batch of lentil soup that lasted me for 5 lunches, and I'm looking for some new recipes to try out."*)
+  - Rank 3 (Score 0.4923, Rel 0.3305): `728e399d` (*"By the way, I just had the best lunch today - I finished off the last of my chicken fajitas with sautAced onions and bell peppers..."*) -> **HIT on EV 0**.
+  - Rank 4 (Score 0.4875, Rel 0.2226): `5923d3b7` (*"Anyway, I was wondering if you have any good recipes for chicken fajitas?"*)
+  - Rank 5 (Score 0.4803, Rel 0.2095): `044cc39c` (*"what is the coefficient of friction between dry chicken manure and plastic surface"*)
+  - Rank 6 (Score 0.4706, Rel 0.1918): `ec730b1c` (*"Do you have any other hearty soup recipes that would be good for meal prep?"*) -> Verbatim substring of EV 1.
+- **Why one report said Rank 7 while another said Rank 2 in context:**
+  - In the **baseline run** (prior to suffix stemming `lunches` <-> `lunch`), the lentil soup proposition scored 0.4350 and placed at **Rank 7**, outside top 5.
+  - In the **refined run** (with suffix stemming), the lentil soup proposition `b992a574` scored 0.5199 and entered **Rank 2**, successfully assembled into the final prompt context (`Selected 5 memories (189/256 tokens)`).
+  - **However**, in the official dataset, `supporting_evidence[1]` is Session 30 Turn 1 (*"I've been really into soups lately. I just made a big batch of lentil soup that lasted me for 5 lunches, so I'm looking for something similar..."*). Proposition `b992a574` was extracted from Session 30 Turn 2 (*"Speaking of meal prep, I recently made a big batch of lentil soup that lasted me for 5 lunches..."*).
+  - Because `evaluate_retrieval_quality` performs a strict verbatim bidirectional substring check (`ev in mem_norm or mem_norm in ev`), Turn 2 does not verbatim substring-match Turn 1.
+  - Therefore, strictly under the official evaluator's verbatim match rule:
+    - Unique ground truth covered: `{0}` (Fajitas).
+    - **Recall@5 = 1 / 2 = 0.50** (denominator: 2 unique evidence facts).
+    - **Precision@5 = 2 / 5 = 0.40** (Ranks 1 and 3 match EV 0).
+    - **MRR = 1.0 / 1 = 1.00** (Rank 1).
+    - The verbatim substring match of EV 1 (`ec730b1c`) is at **Rank 6**, which correctly cannot count as a top-five hit.
+
+### 5.2 Q6 (`bc149d6b`) Bridging & Ranking Audit
+- **Query Content Words (len=8):** `['feed', 'months', 'new', 'past', 'purchased', 'total', 'two', 'weight']`.
+- **Scratch Grains Memory:** *"By the way, I also bought 20 pounds of organic scratch grains for my chickens recently, and I've noticed an improvement in the quality of eggs."*
+  - Exact unigram overlap: `set()` (0 words).
+  - Stem matches: `set()` (0 words).
+  - Purchase bridge: `purchased` <-> `bought` matches -> `_purchase_synonym`.
+  - Feed bridge: `feed` <-> `scratch`, `grains` matches -> `_feed_synonym`.
+  - Total overlap: 2 / 8 = 0.2500.
+  - Base text similarity: 0.2317.
+  - Relevance: $0.65 \times 0.2500 + 0.35 \times 0.2317 = \mathbf{0.2436}$.
+  - Memory attributes: `utility = 0.6428`, `recency = 1.0000`, `stability = 0.4000`.
+  - Scored: $0.55 \times 0.2436 + 0.2 \times 0.6428 + 0.15 \times 1.0000 + 0.1 \times 0.4000 = \mathbf{0.4525}$ (Rank 7).
+- **Why it did not enter Top 5:**
+  - Rank 5 (Fact 1, layer feed) scored 0.4587 (difference of only **0.0062 points**).
+  - Rank 4 (Hamilton soundtrack) scored 0.4603 because it matched 3 temporal qualifier words: `past`, `two`, `months` ($3/8 = 0.375$ overlap).
+  - The bridging successfully promoted scratch grains from 0.0811 (sub-threshold) to 0.2436 (Rank 7 across 1,100 candidates). Overfitting the scorer with an ad-hoc boost to bridge the remaining 0.0062 points would risk distorting rankings on other queries.
+
+### 5.3 Dataset Identity Audit
+- **Q4 (`bc8a6e93`):** Verified official question is *"What did I bake for my niece's birthday party?"*, expected answer is `"a lemon blueberry cake"`. (Prose typo in earlier notes corrected from "lemon desserts").
+- **Q5 (`6f9b354f`):** Verified official question is *"What color did I repaint my bedroom walls?"*, expected answer is `"a lighter shade of gray"`. (Prose typo in earlier notes corrected from "repainted kitchen").
+- **Q10 (`8979f9ec`):** Verified official question is *"What is the total number of lunch meals I got from the chicken fajitas and lentil soup?"*, expected answer is `"8 meals"`.
+
+---
+
+## 6. Summary Aggregate Metrics & Reproducibility Note
 
 | Metric | Baseline (Pre-Correction) | Post-Correction (Batch 2 Refined) | Absolute Change |
 |---|---|---|---|
 | **Mean Recall@5 (evaluable, N=9)** | 0.6519 (65.2%) | **0.7852 (78.5%)** | **+13.33%** |
 | **Mean Precision@5 (evaluable, N=9)** | 0.2222 (22.2%) | **0.3111 (31.1%)** | **+8.89%** |
 | **Mean MRR (evaluable, N=9)** | 0.7444 | **0.8556** | **+0.1112** |
-| **Mean Retrieval Latency (N=10)** | 712.44 ms | **529.58 ms** | **-182.86 ms (-25.7%)** |
 | **Mean Storage Tokens Used** | 485.6 / 500 tokens | **487.2 / 500 tokens** | Within 500-token budget |
 | **Batch 1 Regression Count** | 0 | **0 (Zero regressions)** | Perfect stability |
 | **Passing Test Suite Count** | 102 passed | **109 passed** | **+7 new tests** |
 
-*Note: Answers were generated with `FakeLLMAdapter` strictly to test pipeline mechanics, schema compliance, and format handling; answer accuracy is 0.0 across all questions and is not representative of actual LLM reasoning.*
+### Latency Reproducibility Note:
+While measured mean retrieval latency across the 10 questions was 529.58 ms, baseline sub-second timing measurements were subject to environmental variations on Windows (background file indexing, fsmonitor, and concurrent processes). In accordance with benchmark reproducibility guidelines, cross-run sub-second latency comparisons should be considered **inconclusive** rather than attributed to algorithmic changes alone.
+
+### Remaining Limitations:
+1. **Asymmetric Clause Overlap in Compound Multi-Fact Queries:** In questions requiring multiple distinct items (e.g. Q6 feed weights, Q10 lunch counts), single clauses with higher literal unigram matches can outrank valid second clauses that rely on semantic bridging.
+2. **Turn-Level Substring Matching vs. Propositional Paraphrase:** When users repeat identical facts across multiple conversational turns (as in Q10 with lentil soup), candidate propositions extracted from subsequent turns may not verbatim substring-match the specific ground-truth turn indexed in the benchmark, causing evaluator recall counting discrepancies even when the factual memory is present in context.
