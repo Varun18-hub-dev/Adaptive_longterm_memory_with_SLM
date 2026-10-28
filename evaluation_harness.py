@@ -109,6 +109,17 @@ def evaluate_retrieval_quality(
 ) -> Dict[str, float]:
     """
     Computes Recall@K, Precision@K, and MRR against ground truth supporting evidence.
+
+    Distinct Ground-Truth Evidence Coverage:
+    - Recall@K measures the proportion of unique ground-truth evidence facts covered by
+      at least one retrieved memory item: len(covered_evidence_indices) / len(supporting_evidence).
+      Duplicate retrieved propositions matching the same evidence fact only count once toward recall.
+    - Precision@K measures the proportion of retrieved memories that match at least one evidence item:
+      relevant_retrieved_count / len(retrieved_memories).
+    - MRR is the reciprocal rank of the first retrieved memory that matches any evidence item:
+      1.0 / first_hit_rank.
+    - If supporting_evidence is empty, all metrics return NaN.
+    - If retrieved_memories is empty, all metrics return 0.0.
     """
     if not supporting_evidence:
         unavailable = float("nan")
@@ -124,19 +135,24 @@ def evaluate_retrieval_quality(
     # Normalize evidence strings
     evidence_norms = [normalize_text(ev) for ev in supporting_evidence]
 
-    matches_found = 0
+    covered_evidence_indices: Set[int] = set()
+    relevant_retrieved_count = 0
     first_hit_rank = 0
 
     for rank_idx, mem in enumerate(retrieved_memories, start=1):
         mem_norm = normalize_text(mem.content)
-        is_hit = any(ev in mem_norm or mem_norm in ev for ev in evidence_norms)
-        if is_hit:
-            matches_found += 1
+        matched_any = False
+        for ev_idx, ev in enumerate(evidence_norms):
+            if ev in mem_norm or mem_norm in ev:
+                covered_evidence_indices.add(ev_idx)
+                matched_any = True
+        if matched_any:
+            relevant_retrieved_count += 1
             if first_hit_rank == 0:
                 first_hit_rank = rank_idx
 
-    recall = min(1.0, matches_found / len(supporting_evidence))
-    precision = matches_found / len(retrieved_memories)
+    recall = len(covered_evidence_indices) / len(supporting_evidence)
+    precision = relevant_retrieved_count / len(retrieved_memories)
     mrr = (1.0 / first_hit_rank) if first_hit_rank > 0 else 0.0
 
     return {

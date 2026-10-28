@@ -57,6 +57,64 @@ class TestEvaluationMetrics(unittest.TestCase):
         self.assertTrue(math.isnan(metrics["precision_at_k"]))
         self.assertTrue(math.isnan(metrics["mrr"]))
 
+    def test_retrieval_metrics_empty_retrieved_memories_returns_zero(self):
+        metrics = evaluate_retrieval_quality([], ["I work at DeepMind."])
+        self.assertEqual(metrics["recall_at_k"], 0.0)
+        self.assertEqual(metrics["precision_at_k"], 0.0)
+        self.assertEqual(metrics["mrr"], 0.0)
+
+    def test_duplicate_propositions_count_as_single_evidence_coverage(self):
+        # Two propositions from the same evidence fact (e.g. Fajitas in Q10)
+        # Ground truth has 2 distinct facts: Fajitas (which contained two clauses/sentences) and Lentil soup
+        ev_fajitas = (
+            "I finished off the last of my chicken fajitas with onions and peppers. "
+            "This is the third meal I got from my chicken fajitas."
+        )
+        ev_lentil = "I just made a big batch of lentil soup that lasted me for 5 lunches."
+
+        prop_fajitas_1 = MemoryItem(
+            id="fajita-1", content="This is the third meal I got from my chicken fajitas.",
+            memory_type=MemoryType.SEMANTIC, source_session_id="s21", timestamp=100.0
+        )
+        prop_fajitas_2 = MemoryItem(
+            id="fajita-2", content="I finished off the last of my chicken fajitas with onions and peppers.",
+            memory_type=MemoryType.EPISODIC, source_session_id="s21", timestamp=100.0
+        )
+        distractor = MemoryItem(
+            id="dist-1", content="I like walking in the park on weekends.",
+            memory_type=MemoryType.EPISODIC, source_session_id="s1", timestamp=50.0
+        )
+
+        # Case 1: Both fajitas propositions retrieved, lentil soup not retrieved
+        metrics = evaluate_retrieval_quality(
+            retrieved_memories=[prop_fajitas_1, prop_fajitas_2, distractor],
+            supporting_evidence=[ev_fajitas, ev_lentil]
+        )
+        # Recall must be 1 / 2 = 0.50 (only Fajitas covered, not 2/2)
+        self.assertEqual(metrics["recall_at_k"], 0.50)
+        # Precision@3 is 2 / 3 (2 relevant memories out of 3 retrieved)
+        self.assertEqual(metrics["precision_at_k"], round(2 / 3, 4))
+        # First hit rank is 1 -> MRR = 1.0
+        self.assertEqual(metrics["mrr"], 1.0)
+
+    def test_multiple_distinct_evidence_facts_coverage(self):
+        ev1 = "I adopted a golden retriever named Max."
+        ev2 = "I bought a blue bicycle."
+        ev3 = "I moved to Seattle in June."
+
+        mem1 = MemoryItem(id="m1", content="I adopted a golden retriever named Max.", memory_type=MemoryType.SEMANTIC, source_session_id="s1", timestamp=10.0)
+        mem2 = MemoryItem(id="m2", content="I bought a blue bicycle.", memory_type=MemoryType.SEMANTIC, source_session_id="s2", timestamp=20.0)
+        distractor = MemoryItem(id="d1", content="Weather is sunny today.", memory_type=MemoryType.EPISODIC, source_session_id="s3", timestamp=30.0)
+
+        # 2 of 3 evidence facts covered
+        metrics = evaluate_retrieval_quality(
+            retrieved_memories=[distractor, mem1, mem2],
+            supporting_evidence=[ev1, ev2, ev3]
+        )
+        self.assertEqual(metrics["recall_at_k"], round(2 / 3, 4))
+        self.assertEqual(metrics["precision_at_k"], round(2 / 3, 4))
+        self.assertEqual(metrics["mrr"], round(1.0 / 2, 4))  # First hit is rank 2
+
     def test_stale_memory_error_detection(self):
         mem = MemoryItem(
             id="1", content="I work at DeepMind now.", memory_type=MemoryType.SEMANTIC,

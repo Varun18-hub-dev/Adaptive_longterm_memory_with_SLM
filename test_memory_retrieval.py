@@ -529,5 +529,115 @@ class TestEndToEndPhase3Pipeline(unittest.TestCase):
         self.assertIn("OpenAI", result_prev["response"])
 
 
+
+
+class TestBatch2TargetedBridgingAndStemming(unittest.TestCase):
+    """
+    Regression tests for Batch 2 generalizable retrieval refinements:
+    1. Plural / inflection suffix normalization (kits/kit, lunches/lunch, worked/working)
+    2. Unambiguous purchase synonym bridging (purchased <-> bought <-> order)
+    3. Agricultural feed / poultry feed bridging (feed <-> scratch grains)
+    4. Faith and religious activity semantic bridging (faith <-> church/mass/bible)
+    5. Food delivery services entity bridging (food delivery <-> uber eats)
+    """
+
+    def test_suffix_stemming_plurals_and_inflections(self):
+        # Query uses plural 'model kits' and past tense 'worked'
+        query = "How many model kits have I worked on?"
+        mem1 = MemoryItem(
+            id="m1",
+            content="I finished a 1/72 scale B-29 bomber model kit.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        mem2 = MemoryItem(
+            id="m2",
+            content="I am working on a 1/16 scale German Tiger I tank.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s2",
+            timestamp=200.0,
+        )
+        rel1 = compute_query_relevance(query, mem1)
+        rel2 = compute_query_relevance(query, mem2)
+        self.assertGreaterEqual(rel1, 0.18)
+        self.assertGreaterEqual(rel2, 0.18)
+
+    def test_purchase_synonym_bridging(self):
+        query = "What feed did I purchase for the animals?"
+        mem_bought = MemoryItem(
+            id="mb",
+            content="I bought 20 pounds of organic scratch grains for my chickens.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        mem_unrelated = MemoryItem(
+            id="mu",
+            content="I like to take a walk in the evening.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s2",
+            timestamp=100.0,
+        )
+        rel_bought = compute_query_relevance(query, mem_bought)
+        rel_unrelated = compute_query_relevance(query, mem_unrelated)
+        self.assertGreaterEqual(rel_bought, 0.18)
+        self.assertLess(rel_unrelated, 0.10)
+
+    def test_faith_activity_semantic_bridging(self):
+        query = "How many days did I spend participating in faith-related activities in December?"
+        mem_church = MemoryItem(
+            id="mc",
+            content="I attended midnight mass at St. Mary's Church on December 24th.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        mem_bible = MemoryItem(
+            id="mb",
+            content="I led a Bible study at my church on December 17th.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s2",
+            timestamp=100.0,
+        )
+        mem_general_activity = MemoryItem(
+            id="mga",
+            content="I participated in various outdoor activities during summer.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s3",
+            timestamp=100.0,
+        )
+        rel_church = compute_query_relevance(query, mem_church)
+        rel_bible = compute_query_relevance(query, mem_bible)
+        rel_general = compute_query_relevance(query, mem_general_activity)
+
+        self.assertGreaterEqual(rel_church, 0.18)
+        self.assertGreaterEqual(rel_bible, 0.18)
+
+        # In end-to-end retrieval, faith memories are successfully retrieved
+        retrieved = retrieve_memories(
+            query=query,
+            episodic_store=[mem_church, mem_bible, mem_general_activity],
+            semantic_store=[],
+            archive_store=[],
+            top_k=3
+        )
+        retrieved_ids = {m.id for m, _ in retrieved}
+        self.assertIn("mc", retrieved_ids)
+        self.assertIn("mb", retrieved_ids)
+
+    def test_food_delivery_entity_bridging(self):
+        query = "How many different types of food delivery services have I used recently?"
+        mem_uber = MemoryItem(
+            id="mu",
+            content="My weekends have been all about Uber Eats lately, it has been a lifesaver.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        rel_uber = compute_query_relevance(query, mem_uber)
+        self.assertGreaterEqual(rel_uber, 0.18)
+
+
 if __name__ == "__main__":
     unittest.main()

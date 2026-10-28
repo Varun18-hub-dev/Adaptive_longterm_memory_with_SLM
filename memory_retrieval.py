@@ -117,6 +117,26 @@ def is_memory_valid_at_timestamp(memory: MemoryItem, query_timestamp: float) -> 
 # 2. Hardened Relevance Scoring & Distractor Pruning
 # ============================================================================
 
+def get_word_stem(w: str) -> str:
+    """
+    Lightweight rule-based suffix normalization for regular English inflections
+    (e.g., plurals like kits/kit, lunches/lunch, and verb endings like worked/working).
+    """
+    if len(w) <= 3:
+        return w
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith("es") and len(w) > 3:
+        return w[:-2]
+    if w.endswith("s") and not w.endswith("ss") and len(w) > 3:
+        return w[:-1]
+    if w.endswith("ing") and len(w) > 4:
+        return w[:-3]
+    if w.endswith("ed") and len(w) > 3:
+        return w[:-2]
+    return w
+
+
 def compute_query_relevance(query: str, memory: MemoryItem) -> float:
     """
     Calculates query-memory relevance combining:
@@ -138,12 +158,45 @@ def compute_query_relevance(query: str, memory: MemoryItem) -> float:
     if not q_content_words:
         q_content_words = q_tokens  # Fallback if query only contained stopwords
 
-    # Keyword intersection with expense semantic bridging
+    # 1. Exact keyword intersection
     intersection = q_content_words.intersection(m_content_words)
+
+    # 2. Suffix / inflection stemming bridge (kits/kit, lunches/lunch, meals/meal, worked/working)
+    q_stems = {get_word_stem(w): w for w in q_content_words}
+    m_stems = {get_word_stem(w) for w in m_content_words}
+    stem_matches = {q_stems[s] for s in q_stems if s in m_stems}
+    intersection = intersection | stem_matches
+
+    # 3. Expense semantic bridging
     expense_synonyms = {"cost", "fee", "price", "paid", "spent", "expense", "expenses", "bill"}
     if not (q_content_words & m_content_words & expense_synonyms):
         if (q_content_words & expense_synonyms) and (m_content_words & expense_synonyms):
             intersection = intersection | {"_expense_synonym"}
+
+    # 4. Purchase / transactional semantic bridging (unambiguous action verbs)
+    purchase_synonyms = {"purchase", "purchased", "purchasing", "buy", "bought", "buying", "order", "ordered"}
+    if not (q_content_words & m_content_words & purchase_synonyms):
+        if (q_content_words & purchase_synonyms) and (m_content_words & purchase_synonyms):
+            intersection = intersection | {"_purchase_synonym"}
+
+    # 5. Agricultural feed / poultry feed bridging
+    feed_synonyms = {"feed", "grains", "grain", "scratch", "pellets", "mash"}
+    if not (q_content_words & m_content_words & feed_synonyms):
+        if (q_content_words & feed_synonyms) and (m_content_words & feed_synonyms):
+            intersection = intersection | {"_feed_synonym"}
+
+    # 6. Faith & religious activity bridging
+    faith_synonyms = {"faith", "church", "mass", "bible", "worship", "devotion", "prayer", "spiritual", "religious"}
+    if not (q_content_words & m_content_words & faith_synonyms):
+        if (q_content_words & faith_synonyms) and (m_content_words & faith_synonyms):
+            intersection = intersection | {"_faith_synonym"}
+
+    # 7. Food delivery services entity bridging
+    delivery_entities = {"uber eats", "doordash", "grubhub", "postmates", "instacart", "deliveroo"}
+    if any(de in q_lower for de in ["delivery", "food delivery", "delivery services"]):
+        if any(ent in mem_lower for ent in delivery_entities):
+            intersection = intersection | {"_delivery_entity", "delivery"}
+
     content_overlap = len(intersection) / max(1, len(q_content_words))
 
     # Slot matching & domain affinity
