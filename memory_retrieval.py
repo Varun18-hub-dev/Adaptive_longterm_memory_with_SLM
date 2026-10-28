@@ -48,7 +48,7 @@ COMMON_STOPWORDS: Set[str] = {
     "should", "so", "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves",
     "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until",
     "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
-    "why", "with", "would", "you", "your", "yours", "yourself", "yourselves", "help", "please", "s", "t", "d", "m", "ll", "ve", "re"
+    "why", "with", "would", "you", "your", "yours", "yourself", "yourselves", "help", "please", "s", "t", "d", "m", "ll", "ve", "re", "recommend", "recommendations", "suggest", "suggestions", "thinking", "interesting"
 }
 
 
@@ -196,6 +196,18 @@ def compute_query_relevance(query: str, memory: MemoryItem) -> float:
     if any(de in q_lower for de in ["delivery", "food delivery", "delivery services"]):
         if any(ent in mem_lower for ent in delivery_entities):
             intersection = intersection | {"_delivery_entity", "delivery"}
+
+    # 8. Academic research & publications bridging
+    academic_synonyms = {"publications", "publication", "conferences", "conference", "papers", "paper", "journals", "journal", "advancements", "research"}
+    if not (q_content_words & m_content_words & academic_synonyms):
+        if (q_content_words & academic_synonyms) and (m_content_words & academic_synonyms):
+            intersection = intersection | {"_academic_synonym"}
+
+    # 9. Recipe & culinary preparation bridging
+    recipe_synonyms = {"recipe", "recipes", "making", "make", "ingredients", "prep"}
+    if not (q_content_words & m_content_words & recipe_synonyms):
+        if (q_content_words & recipe_synonyms) and (m_content_words & recipe_synonyms):
+            intersection = intersection | {"_recipe_synonym"}
 
     content_overlap = len(intersection) / max(1, len(q_content_words))
 

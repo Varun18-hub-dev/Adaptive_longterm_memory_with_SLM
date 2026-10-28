@@ -639,5 +639,72 @@ class TestBatch2TargetedBridgingAndStemming(unittest.TestCase):
         self.assertGreaterEqual(rel_uber, 0.18)
 
 
+
+
+class TestBatch3PreferenceAndDomainBridging(unittest.TestCase):
+    """
+    Regression tests for Batch 3 generalizable retrieval refinements:
+    1. Conversational meta-word suppression (filtering 'recommend', 'thinking', 'suggest' from dominating topical keywords)
+    2. Academic research & publication semantic bridging (publications/conferences <-> advancements/research/papers)
+    3. Culinary recipe & preparation bridging (recipe <-> making/ingredients)
+    """
+
+    def test_conversational_meta_word_suppression(self):
+        query = "I was thinking of trying a new coffee creamer recipe. Any recommendations?"
+        mem_topical = MemoryItem(
+            id="m_topical",
+            content="I started making my own flavored creamer with almond milk and honey.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        mem_conversational_distractor = MemoryItem(
+            id="m_dist",
+            content="I'm thinking of customizing my new Birkenstocks with some colorful straps.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s2",
+            timestamp=100.0,
+        )
+        rel_topical = compute_query_relevance(query, mem_topical)
+        rel_dist = compute_query_relevance(query, mem_conversational_distractor)
+
+        self.assertGreaterEqual(rel_topical, 0.18)
+        self.assertGreater(rel_topical, rel_dist)
+
+    def test_academic_publication_bridging(self):
+        query = "Can you recommend some recent publications or conferences that I might find interesting?"
+        mem_academic = MemoryItem(
+            id="m_acad",
+            content="Can you give me an overview of the recent advancements in this field of deep learning for medical image analysis?",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        mem_distractor = MemoryItem(
+            id="m_batman",
+            content="If you're interested in preparing for the new Batman film, I'd recommend re-watching the previous ones.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s2",
+            timestamp=100.0,
+        )
+        rel_academic = compute_query_relevance(query, mem_academic)
+        rel_dist = compute_query_relevance(query, mem_distractor)
+
+        self.assertGreaterEqual(rel_academic, 0.18)
+        self.assertGreater(rel_academic, rel_dist)
+
+    def test_culinary_recipe_bridging(self):
+        query = "Any suggestions for new recipes for dinner?"
+        mem_recipe = MemoryItem(
+            id="m_rec",
+            content="I've been making roasted vegetable bowls with quinoa for dinner.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        rel_recipe = compute_query_relevance(query, mem_recipe)
+        self.assertGreaterEqual(rel_recipe, 0.18)
+
+
 if __name__ == "__main__":
     unittest.main()
