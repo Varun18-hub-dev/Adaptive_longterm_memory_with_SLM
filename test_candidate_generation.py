@@ -169,12 +169,22 @@ class TestCandidateGenerationCases(unittest.TestCase):
         )
         self.assertTrue(
             HeuristicCandidateExtractor._is_admissible_assistant_turn(
-                "Grilled Snapper with Mango Salsa is topped with a fruity and spicy salsa."
+                "Grilled Snapper with Mango Salsa is topped with fruit salsa."
             )
         )
         self.assertTrue(
             HeuristicCandidateExtractor._is_admissible_assistant_turn(
-                "Patagonia, an outdoor clothing and gear company, is known for its commitment to sustainability."
+                "Patagonia is known for its sustainable supply chain."
+            )
+        )
+        self.assertTrue(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Two-factor authentication includes biometric authentication or OTP."
+            )
+        )
+        self.assertTrue(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Southwest Airlines offers employee safety training."
             )
         )
         self.assertTrue(
@@ -183,6 +193,31 @@ class TestCandidateGenerationCases(unittest.TestCase):
             )
         )
         # Generic advice, filler, or sentences without concrete named entities must be rejected
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "I recommend exercising regularly because it improves health."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "A healthy diet includes vegetables and whole grains."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "An effective security strategy uses strong passwords and regular updates."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "My suggestion is to get enough sleep and drink water."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "I suggest maintaining a consistent study schedule."
+            )
+        )
         self.assertFalse(
             HeuristicCandidateExtractor._is_admissible_assistant_turn(
                 "The biggest threats to giraffe populations are human-related activities such as habitat destruction."

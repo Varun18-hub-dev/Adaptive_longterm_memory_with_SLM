@@ -189,8 +189,9 @@ class BaseCandidateExtractor(ABC):
 
 
 _ASSISTANT_STOP_CAPS = {
-    "The", "This", "These", "Those", "There", "Here", "Some", "Many", "All", "Each", "Every",
-    "In", "On", "At", "For", "To", "With", "By", "From", "As", "It", "They", "We", "You",
+    "A", "An", "The", "This", "That", "These", "Those", "There", "Here", "Some", "Many", "All", "Each", "Every",
+    "In", "On", "At", "For", "To", "With", "By", "From", "As", "It", "They", "We", "You", "He", "She",
+    "My", "Your", "His", "Her", "Its", "Our", "Their", "What", "Which", "Who", "Whom", "Whose",
     "One", "Two", "Three", "First", "Second", "Third", "Another", "Other", "However", "Moreover",
     "Furthermore", "Therefore", "Additionally", "Yes", "No", "Please", "Sure"
 }

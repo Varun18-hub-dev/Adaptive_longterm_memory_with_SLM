@@ -1620,7 +1620,7 @@ The table below reports cumulative performance across all 25 questions evaluated
 
 ### 1. Executive Summary & Cohort Overview
 
-Batch 6 examines five questions belonging to the `single-session-assistant` category. Unlike previous cohorts where target facts originated from the user (personal attributes, preferences, temporal updates), these questions require the system to recall factual information, domain tools, or recommendations provided by the **assistant** in earlier conversation sessions:
+Batch 6 evaluates five questions belonging to the `single-session-assistant` category. Unlike previous cohorts where target facts originated from the user (personal attributes, preferences, temporal updates), these questions require the system to recall factual information, domain tools, or recommendations provided by the **assistant** in earlier conversation sessions:
 
 | Question | ID | Category | Sessions | Target Entity / Information | Query Summary |
 |:---|:---:|:---:|:---:|:---|:---|
@@ -1630,28 +1630,31 @@ Batch 6 examines five questions belonging to the `single-session-assistant` cate
 | **Q29** | `1d4da289` | single-session-assistant | 22 | `biometric authentication or OTP` | Two-factor authentication methods mentioned by assistant |
 | **Q30** | `a40e080f` | single-session-assistant | 50 | `Patagonia and Southwest Airlines` | Two companies prioritizing employee safety like Triumvirate |
 
-On baseline execution, Batch 6 achieved only **Recall@5 = 0.2000 (20.0%)**, with 4 of 5 questions failing completely (Recall = 0.0) because target assistant turns were rejected during ingestion at Stage 1 (Candidate Admission). Following a generalizable refinement to candidate admission for assistant informative predicates coupled with concrete named-entity filtering, **all five questions achieved Recall@5 = 1.0000 (100.0%)**, with zero regressions across Questions 1–25.
+- **Baseline Performance:** Recall@5 = **0.2000 (20.0%)**, with 4 of 5 questions failing completely (Recall@5 = 0.0) due to assistant turn rejection during Stage 1 candidate ingestion.
+- **Root Cause & Fix:** In `candidate_generation.py`, assistant turn admission (`_is_admissible_assistant_turn`) previously required matching a narrow recommendation verb pattern (`check out`, `recommend`, `suggest`, etc.). Expanding admission to cover factual definitions and implementations (`uses`, `implements`, `known for`, `features`, `topped with`, `such as`) coupled with concrete named-entity filtering (`_has_concrete_named_entity`) resolved all 4 failures.
+- **Post-Fix Performance:** Batch 6 Mean Recall@5 rose from **0.2000 (20.0%)** to **1.0000 (100.0%)**.
+- **Audit Hardening:** A post-implementation audit of `_has_concrete_named_entity()` revealed that sentence-initial grammatical function words (`An`, `My`) were not initially listed in `_ASSISTANT_STOP_CAPS`. Expanding the stop-caps list to cover English determiners, pronouns, and prepositions cleanly eliminated false positives while preserving 100% recall on Batch 6 and zero regressions on Questions 1–25.
 
 ---
 
-### 2. Question-by-Question Deep Dive
+### 2. Question-by-Question Deep Dive (Baseline vs. Final Retrieval)
 
-#### Q26 (`6222b6eb`) — Algorithm Implemented in SIAC_GEE
+#### Q26 (`6222b6eb`) — Atmospheric Correction in SIAC_GEE
 - **Query:** *"I was going through our previous conversation about atmospheric correction methods, and I wanted to confirm - you mentioned that 6S, MAJA, and Sen2Cor are all algorithms for atmospheric correction of remote sensing images. Can you remind me which one is implemented in the SIAC_GEE tool?"*
 - **Expected Answer:** *"The 6S algorithm is implemented in the SIAC_GEE tool."*
 - **Supporting Evidence (1 item):**
-  - *EV 0 (Session 31, Turn 11):* Assistant response detailing atmospheric correction algorithms: *"2. Algorithm: SIAC_GEE uses the 6S radiative transfer model for atmospheric correction, while Sen2Cor uses the L2A_Process algorithm."*
-- **Baseline Retrieval:**
-  - Rank 1: `0.5050` — *"compare between 6S, MAJA and SEN2COR for atmospheric correction"* (user turn).
-  - Target assistant turn was **missing from memory store entirely** (`adm=False` at ingestion).
-  - Baseline Metrics: Recall@5 = **0.0000 (0/1)**, Precision@5 = **0.0000**, MRR = **0.0000**.
+  - *EV 0 (Session 31, Turn 11):* Assistant response: *"2. Algorithm: SIAC_GEE uses the 6S radiative transfer model for atmospheric correction, while Sen2Cor uses the L2A_Process algorithm."*
+- **Complete Baseline Retrieval (1 candidate retrieved):**
+  - **Rank 1:** `0.4987` (rel 0.2431) — *"compare between 6S, MAJA and SEN2COR for atmospheric correction"* (user turn, non-hit).
+  - *Note:* Only 1 candidate was retrieved because the target assistant turn was discarded at Stage 1 ingestion (`adm=False`).
+  - Baseline Metrics: Recall@5 = **0.0000 (0/1)**, Evaluator Prec@5 = **0.0000**, Fixed-k Prec@5 = **0.0000**, MRR = **0.0000**.
 - **Post-Fix Retrieval (Top 5):**
   - **Rank 1:** `0.4988` (rel 0.4975) — *"compare between 6S, MAJA and SEN2COR for atmospheric correction"*
   - **Rank 2:** `0.4442` (rel 0.3884) — *"In summary, SIAC_GEE and Sen2Cor are both tools for atmospheric correction of Sentinel-2 images..."* (**EV 0 Hit**)
   - **Rank 3:** `0.4434` (rel 0.3867) — *"Algorithm: SIAC_GEE uses the 6S radiative transfer model for atmospheric correction, while Sen2Cor uses the L2A_Process algorithm."* (**EV 0 Hit**)
   - **Rank 4:** `0.4416` (rel 0.3831) — *"Sen2Cor algorithm is a method that uses a combination of physical models, look-up tables..."*
   - **Rank 5:** `0.4382` (rel 0.3765) — *"MAJA (Method for Atmospheric Correction and Orthorectification) algorithm..."*
-- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Precision@5 = **0.4000 (2/5)**, MRR = **0.5000 (Rank 2)**.
+- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Evaluator Prec@5 = **0.4000 (2/5)**, Fixed-k Prec@5 = **0.4000 (2/5)**, MRR = **0.5000 (Rank 2)**.
 - **Budget Compliance:** Storage: 499 / 500 tokens; Context: 216 / 256 tokens (5/5 in context).
 
 ---
@@ -1661,16 +1664,20 @@ On baseline execution, Batch 6 achieved only **Recall@5 = 0.2000 (20.0%)**, with
 - **Expected Answer:** *"Grilled Snapper with Mango Salsa"*
 - **Supporting Evidence (1 item):**
   - *EV 0 (Session 48, Turn 3):* Assistant list of Caribbean snapper dishes: *"4. Grilled Snapper with Mango Salsa - a popular dish in many Caribbean countries where grilled snapper is topped with a fruity and spicy salsa."*
-- **Baseline Retrieval:**
-  - Retrieved user query turns (*"What are some popular Caribbean dishes that feature snapper?"*, *"Are there any other Jamaican dishes that I should try?"*), but zero assistant dish propositions.
-  - Baseline Metrics: Recall@5 = **0.0000 (0/1)**, Precision@5 = **0.0000**, MRR = **0.0000**.
+- **Complete Baseline Retrieval (5 candidates retrieved):**
+  - **Rank 1:** `0.5154` (rel 0.2737) — *"What are some popular Caribbean dishes that feature snapper?"* (user query turn, non-hit)
+  - **Rank 2:** `0.5111` (rel 0.2656) — *"Are there any other Jamaican dishes that I should try?"* (user query turn, non-hit)
+  - **Rank 3:** `0.4815` (rel 0.2117) — *"What type of fish is commonly used in Caribbean dishes?"* (user query turn, non-hit)
+  - **Rank 4:** `0.4752` (rel 0.2006) — *"Some popular dishes to try in Sochi include:"* (user turn, non-hit)
+  - **Rank 5:** `0.4661` (rel 0.1837) — *"Do you have any other favorite dishes from Caribbean cuisine?"* (user query turn, non-hit)
+  - Baseline Metrics: Recall@5 = **0.0000 (0/1)**, Evaluator Prec@5 = **0.0000**, Fixed-k Prec@5 = **0.0000**, MRR = **0.0000**.
 - **Post-Fix Retrieval (Top 5):**
   - **Rank 1:** `0.4900` (rel 0.4800) — *"What are some popular Caribbean dishes that feature snapper?"*
   - **Rank 2:** `0.4856` (rel 0.4712) — *"Are there any other Jamaican dishes that I should try?"*
   - **Rank 3:** `0.4681` (rel 0.4362) — *"Grilled Snapper with Mango Salsa - a popular dish in many Caribbean countries where grilled snapper is topped with a fruity and spicy salsa."* (**EV 0 Hit**)
   - **Rank 4:** `0.4608` (rel 0.4216) — *"Escovitch Fish - a Jamaican dish where fried snapper is topped with a spicy pickled vegetable sauce."* (**EV 0 Hit**)
   - **Rank 5:** `0.4419` (rel 0.3837) — *"Ackee and Saltfish - Jamaica's national dish, made with the fruit of the ackee tree and salted codfish."*
-- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Precision@5 = **0.4000 (2/5)**, MRR = **0.3333 (Rank 3)**.
+- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Evaluator Prec@5 = **0.4000 (2/5)**, Fixed-k Prec@5 = **0.4000 (2/5)**, MRR = **0.3333 (Rank 3)**.
 - **Budget Compliance:** Storage: 464 / 500 tokens; Context: 164 / 256 tokens (5/5 in context).
 
 ---
@@ -1680,16 +1687,18 @@ On baseline execution, Batch 6 achieved only **Recall@5 = 0.2000 (20.0%)**, with
 - **Expected Answer:** *"Patagonia"*
 - **Supporting Evidence (1 item):**
   - *EV 0 (Session 39, Turn 3):* Assistant response: *"Patagonia, an outdoor clothing and gear company, is known for its commitment to sustainability and environmental responsibility throughout its supply chain..."*
-- **Baseline Retrieval:**
-  - Retrieved general conversation turns about supply chains; target Patagonia propositions were filtered out at ingestion.
-  - Baseline Metrics: Recall@5 = **0.0000 (0/1)**, Precision@5 = **0.0000**, MRR = **0.0000**.
+- **Complete Baseline Retrieval (3 candidates retrieved):**
+  - **Rank 1:** `0.5209` (rel 0.2837) — *"How does the company ensure its supply chain is environmentally responsible?"* (user turn, non-hit)
+  - **Rank 2:** `0.5205` (rel 0.2827) — *"I hope more companies follow suit and prioritize sustainability in their supply chain practices."* (user turn, non-hit)
+  - **Rank 3:** `0.4463` (rel 0.2323) — *"These reports can provide more specific details about a company's goals, initiatives, and progress..."* (assistant turn, non-hit)
+  - Baseline Metrics: Recall@5 = **0.0000 (0/1)**, Evaluator Prec@5 = **0.0000**, Fixed-k Prec@5 = **0.0000**, MRR = **0.0000**.
 - **Post-Fix Retrieval (Top 5):**
   - **Rank 1:** `0.5211` (rel 0.5422) — *"How does the company ensure its supply chain is environmentally responsible?"*
   - **Rank 2:** `0.5205` (rel 0.5410) — *"I hope more companies follow suit and prioritize sustainability in their supply chain practices."*
   - **Rank 3:** `0.4437` (rel 0.3874) — *"Patagonia, an outdoor clothing and gear company, is known for its commitment to sustainability and environmental responsibility throughout its supply chain."* (**EV 0 Hit**)
   - **Rank 4:** `0.4408` (rel 0.3816) — *"Compliance with environmental regulations: Companies can ensure that their supply chain is environmentally responsible..."*
-- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Precision@5 = **0.2500 (1/4)**, MRR = **0.3333 (Rank 3)**.
-- **Budget Compliance:** Storage: 493 / 500 tokens; Context: 162 / 256 tokens (4/5 in context; 4 memories total retrieved).
+- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Evaluator Prec@5 = **0.2500 (1/4)**, Fixed-k Prec@5 = **0.2000 (1/5)**, MRR = **0.3333 (Rank 3)**.
+- **Budget Compliance:** Storage: 493 / 500 tokens; Context: 162 / 256 tokens (4/4 retrieved admitted into context).
 
 ---
 
@@ -1697,15 +1706,15 @@ On baseline execution, Batch 6 achieved only **Recall@5 = 0.2000 (20.0%)**, with
 - **Query:** *"I was thinking about our previous conversation about data privacy and security. You mentioned that companies use two-factor authentication to enhance security. Can you remind me what kind of two-factor authentication methods you were referring to?"*
 - **Expected Answer:** *"I mentioned biometric authentication or one-time passwords (OTP) as examples of two-factor authentication methods."*
 - **Supporting Evidence (1 item):**
-  - *EV 0 (Session 17, Turn 1):* Assistant data security list item: *"3. Two-factor authentication: Requiring two-factor authentication, such as biometric authentication or one-time passwords (OTP), enhances security by ensuring that only authorized users can access sensitive data."*
-- **Baseline Retrieval:**
-  - Only 1 memory retrieved (user question: *"What are some steps companies take to ensure data privacy and security for their customers?"*).
-  - Baseline Metrics: Recall@5 = **0.0000 (0/1)**, Precision@5 = **0.0000**, MRR = **0.0000**.
+  - *EV 0 (Session 17, Turn 1):* Assistant data security list: *"3. Two-factor authentication: Requiring two-factor authentication, such as biometric authentication or one-time passwords (OTP), enhances security by ensuring that only authorized users can access sensitive data."*
+- **Complete Baseline Retrieval (1 candidate retrieved):**
+  - **Rank 1:** `0.4976` (rel 0.2409) — *"What are some steps companies take to ensure data privacy and security for their customers?"* (user query turn, non-hit)
+  - Baseline Metrics: Recall@5 = **0.0000 (0/1)**, Evaluator Prec@5 = **0.0000**, Fixed-k Prec@5 = **0.0000**, MRR = **0.0000**.
 - **Post-Fix Retrieval (Top 5):**
   - **Rank 1:** `0.4976` (rel 0.4952) — *"What are some steps companies take to ensure data privacy and security for their customers?"*
   - **Rank 2:** `0.4426` (rel 0.3852) — *"Two-factor authentication: Requiring two-factor authentication, such as biometric authentication or one-time passwords (OTP), enhances security by ensuring that only authorized users can access sensitive data."* (**EV 0 Hit**)
-- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Precision@5 = **0.5000 (1/2)**, MRR = **0.5000 (Rank 2)**.
-- **Budget Compliance:** Storage: 488 / 500 tokens; Context: 80 / 256 tokens (2/2 in context; 2 memories total retrieved).
+- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Evaluator Prec@5 = **0.5000 (1/2)**, Fixed-k Prec@5 = **0.2000 (1/5)**, MRR = **0.5000 (Rank 2)**.
+- **Budget Compliance:** Storage: 488 / 500 tokens; Context: 80 / 256 tokens (2/2 retrieved admitted into context).
 
 ---
 
@@ -1714,68 +1723,76 @@ On baseline execution, Batch 6 achieved only **Recall@5 = 0.2000 (20.0%)**, with
 - **Expected Answer:** *"Patagonia and Southwest Airlines."*
 - **Supporting Evidence (1 item):**
   - *EV 0 (Session 31, Turn 7):* Assistant response: *"As an AI language model, I can give you an example of two companies that prioritize the safety and well-being of their employees like Triumvirate does: 1. Patagonia... 2. Southwest Airlines..."*
-- **Baseline Retrieval:**
-  - Rank 1: `0.6051` — User question: *"Do you know of any other companies that prioritize safety and well-being like Triumvirate?"*
-  - Rank 2: `0.5859` — Assistant proposition admitted due to predicate `"offers"`: *"Southwest offers its 'Warriors' top-of-the-line training, generous benefits packages..."* (**EV 0 Hit**)
-  - Baseline Metrics: Recall@5 = **1.0000 (1/1)**, Precision@5 = **0.2000 (1/5)**, MRR = **0.5000 (Rank 2)**.
+- **Complete Baseline Retrieval (5 candidates retrieved):**
+  - **Rank 1:** `0.6051` (rel 0.4365) — *"Do you know of any other companies that prioritize safety and well-being like Triumvirate?"* (user turn, non-hit)
+  - **Rank 2:** `0.5859` (rel 0.4860) — *"As an AI language model, I can give you an example of two companies that prioritize the safety and well-being of their employees like Triumvirate does..."* (**EV 0 Hit**, admitted due to predicate `"offers"`)
+  - **Rank 3:** `0.4940` (rel 0.2345) — *"It's important for companies to prioritize the well-being of their workers."* (user turn, non-hit)
+  - **Rank 4:** `0.4933` (rel 0.2332) — *"It's reassuring to know that companies can still be successful while prioritizing employee safety."* (user turn, non-hit)
+  - **Rank 5:** `0.4859` (rel 0.2200) — *"I'm glad to hear that Triumvirate takes employee safety seriously."* (user turn, non-hit)
+  - Baseline Metrics: Recall@5 = **1.0000 (1/1)**, Evaluator Prec@5 = **0.2000 (1/5)**, Fixed-k Prec@5 = **0.2000 (1/5)**, MRR = **0.5000 (Rank 2)**.
 - **Post-Fix Retrieval (Top 5):**
   - **Rank 1:** `0.6051` (rel 0.7102) — *"Do you know of any other companies that prioritize safety and well-being like Triumvirate?"*
   - **Rank 2:** `0.5859` (rel 0.6718) — *"As an AI language model, I can give you an example of two companies that prioritize the safety and well-being of their employees like Triumvirate does..."* (**EV 0 Hit**)
   - **Rank 3:** `0.4940` (rel 0.4880) — *"It's important for companies to prioritize the well-being of their workers."*
   - **Rank 4:** `0.4933` (rel 0.4865) — *"It's reassuring to know that companies can still be successful while prioritizing employee safety."*
   - **Rank 5:** `0.4859` (rel 0.4718) — *"I'm glad to hear that Triumvirate takes employee safety seriously."*
-- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Precision@5 = **0.2000 (1/5)**, MRR = **0.5000 (Rank 2)**.
+- **Final Metrics:** Recall@5 = **1.0000 (1/1)**, Evaluator Prec@5 = **0.2000 (1/5)**, Fixed-k Prec@5 = **0.2000 (1/5)**, MRR = **0.5000 (Rank 2)**.
 - **Budget Compliance:** Storage: 482 / 500 tokens; Context: 161 / 256 tokens (5/5 in context).
 
 ---
 
-### 3. Root Cause Analysis & Generalizable Candidate Refinement
+### 3. Named-Entity Filter & False-Positive Audit
 
-#### Diagnosis: The Assistant Turn Admission Bottleneck
-In LongMemEval, queries categorized under `single-session-assistant` specifically test the memory system's capacity to retain concrete answers, entities, and recommendations supplied by the assistant.
+#### Audit Findings on `_has_concrete_named_entity()`
+A focused audit of `_has_concrete_named_entity()` tested both negative (generic advice) and positive (concrete factual) assistant sentences:
 
-Inspection of `candidate_generation.py` revealed that candidate ingestion previously employed a strict gate on assistant turns:
-```python
-recommendation_pattern = r"\b(check out|visit|try|consider|recommend|suggest|offers?|provides?|includes?)\b"
-entity_pattern = r"\b[A-Z][A-Za-z0-9&'-]*(?:\s+(?:[A-Z][A-Za-z0-9&'-]*|of|the|in|at|&)){0,4}\b"
-```
-This heuristic gate caused widespread false-negative rejections for assistant responses providing factual knowledge or concrete examples:
-1. **Algorithm / Technical Information (Q26):** Verbs like `"uses the 6S model"`, `"implements"`, `"utilizes"` were rejected.
-2. **Food / Dishes (Q27):** Descriptions like `"Grilled Snapper with Mango Salsa... topped with a fruity salsa"` or `"served with"` were rejected.
-3. **Corporate / Sustainability Facts (Q28):** Predicates like `"is known for its commitment to sustainability"` were rejected.
-4. **Security Methods (Q29):** Concrete enumerations like `"Requiring two-factor authentication, such as biometric authentication or one-time passwords (OTP)"` were rejected.
+1. **Negative Test Cases (Expected Rejection — Generic Advice):**
+   - `I recommend exercising regularly because it improves health.` -> Rejected (`got=0`, PASS)
+   - `A healthy diet includes vegetables and whole grains.` -> Rejected (`got=0`, PASS)
+   - `An effective security strategy uses strong passwords and regular updates.` -> Initially admitted due to sentence-initial `"An"`; resolved after expanding `_ASSISTANT_STOP_CAPS` (`got=0`, PASS)
+   - `My suggestion is to get enough sleep and drink water.` -> Initially admitted due to sentence-initial `"My"`; resolved after expanding `_ASSISTANT_STOP_CAPS` (`got=0`, PASS)
+   - `I suggest maintaining a consistent study schedule.` -> Rejected (`got=0`, PASS)
 
-#### Preventing False-Positive Entity Matches (The Q7 Safeguard)
-Naively expanding the predicate pattern to include `"such as"` while using `entity_pattern = r"[A-Z]..."` introduced a subtle regression on Question 7: ordinary English sentences beginning with capitalized grammatical function words (e.g., *"The biggest threats to giraffe populations are human-related activities such as habitat destruction..."*) caused `"The"` to match the named-entity pattern. Because this non-target sentence contained `"activities"`, it usurped a top-5 retrieval slot from genuine church volunteer memories in Q7.
+2. **Positive Test Cases (Expected Admission — Concrete Information):**
+   - `Patagonia is known for its sustainable supply chain.` -> Admitted (`got=1`, PASS)
+   - `SIAC_GEE uses the 6S radiative transfer model.` -> Admitted (`got=1`, PASS)
+   - `Grilled Snapper with Mango Salsa is topped with fruit salsa.` -> Admitted (`got=1`, PASS)
+   - `Two-factor authentication includes biometric authentication or OTP.` -> Admitted (`got=1`, PASS)
+   - `Southwest Airlines offers employee safety training.` -> Admitted (`got=1`, PASS)
 
-To solve this systematically, candidate generation was hardened with two complementary mechanisms:
-1. **Concrete Informative Predicates:** Expanded predicate admission to cover factual definitions, implementations, and concrete examples:
-   `r"(check out|visit|try|consider|recommend|suggest|offers?|provides?|includes?|uses?|utilizes?|implements?|known for|features?|served with|made with|topped with|such as)"`
-2. **True Named-Entity Filtering (`_has_concrete_named_entity`):** Disallowed capitalized sentence-initial stopwords (`The`, `This`, `These`, `There`, `Here`, `Some`, `Many`, `In`, `On`, etc.) from acting as false-positive named entities. Requiring bona fide proper nouns, multi-word entities (`Grilled Snapper with Mango Salsa`, `Southwest Airlines`), or uppercase acronyms/codes (`SIAC_GEE`, `6S`, `OTP`, `Sen2Cor`) ensures that only concrete, factual propositions enter the memory pool while generic narrative text remains cleanly excluded.
+#### Q7 False-Positive Protection Audit
+To verify that generic assistant propositions do not displace target user evidence (as previously occurred with giraffe-threat propositions), Session 16 of Question 7 (`5a7937c8`) was evaluated through the full extraction and retrieval pipeline:
+- The sentence *"The biggest threats to giraffe populations are human-related activities such as habitat destruction..."* is rejected during candidate ingestion (0 candidates extracted).
+- Under the full pipeline re-run, Question 7 retrieved all three faith-activity supporting facts (`Mary's Church`, `Bible study`, `church food drive`) in its top 5 without interference from giraffe dialogue, maintaining:
+  - **Recall@5 = 1.0000 (3/3)**, **Evaluator Precision@5 = 0.6000 (3/5)**, **Fixed-k Precision@5 = 0.6000 (3/5)**, **MRR = 1.0000 (Rank 1)**.
 
 ---
 
-### 4. Batch 6 Summary Table
+### 4. Batch 6 Summary Table & Dual Precision Reporting
 
-| Question ID | Category | Baseline Recall@5 | Final Recall@5 | Final Prec@5 | Final MRR | Storage Tokens | Context Tokens | Status |
-|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `6222b6eb` (Q26) | single-session-assistant | 0.0000 | **1.0000** | 0.4000 | 0.5000 | 499 / 500 | 216 / 256 | Resolved |
-| `778164c6` (Q27) | single-session-assistant | 0.0000 | **1.0000** | 0.4000 | 0.3333 | 464 / 500 | 164 / 256 | Resolved |
-| `e48988bc` (Q28) | single-session-assistant | 0.0000 | **1.0000** | 0.2500 | 0.3333 | 493 / 500 | 162 / 256 | Resolved |
-| `1d4da289` (Q29) | single-session-assistant | 0.0000 | **1.0000** | 0.5000 | 0.5000 | 488 / 500 | 80 / 256 | Resolved |
-| `a40e080f` (Q30) | single-session-assistant | 1.0000 | **1.0000** | 0.2000 | 0.5000 | 482 / 500 | 161 / 256 | Maintained |
-| **Batch 6 Mean** | **5 Questions** | **0.2000 (20%)** | **1.0000 (100%)** | **0.3500 (35%)**| **0.4333** | **485.2 / 500** | **156.6 / 256** | **Compliant** |
+In accordance with the audited benchmark conventions, precision is reported under two definitions:
+- **Evaluator Precision:** $\text{relevant retrieved memories} / |\text{retrieved memories}|$ (evaluator native definition).
+- **Fixed-k Precision:** $\text{relevant retrieved memories} / 5$ (standard benchmark denominator $k=5$).
+
+| Question ID | Category | Baseline Recall@5 | Final Recall@5 | Evaluator Prec@5 | Fixed-k Prec@5 | Final MRR | Storage Tokens | Context Tokens | Status |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `6222b6eb` (Q26) | single-session-assistant | 0.0000 | **1.0000** | 0.4000 (2/5) | 0.4000 (2/5) | 0.5000 | 499 / 500 | 216 / 256 | Resolved |
+| `778164c6` (Q27) | single-session-assistant | 0.0000 | **1.0000** | 0.4000 (2/5) | 0.4000 (2/5) | 0.3333 | 464 / 500 | 164 / 256 | Resolved |
+| `e48988bc` (Q28) | single-session-assistant | 0.0000 | **1.0000** | 0.2500 (1/4) | 0.2000 (1/5) | 0.3333 | 493 / 500 | 162 / 256 | Resolved |
+| `1d4da289` (Q29) | single-session-assistant | 0.0000 | **1.0000** | 0.5000 (1/2) | 0.2000 (1/5) | 0.5000 | 488 / 500 | 80 / 256 | Resolved |
+| `a40e080f` (Q30) | single-session-assistant | 1.0000 | **1.0000** | 0.2000 (1/5) | 0.2000 (1/5) | 0.5000 | 482 / 500 | 161 / 256 | Maintained |
+| **Batch 6 Mean** | **5 Questions** | **0.2000 (20%)** | **1.0000 (100%)** | **0.3500 (35%)**| **0.2800 (28%)**| **0.4333** | **485.2 / 500** | **156.6 / 256** | **Compliant** |
 
 ---
 
 ### 5. Code Changes & Test Suite Status
 
 - **Implementation Updates:**
-  - `candidate_generation.py`: Added `_ASSISTANT_STOP_CAPS` and `_has_concrete_named_entity()`. Updated `HeuristicCandidateExtractor._is_admissible_assistant_turn()` to admit concrete informative predicates (`uses`, `implements`, `known for`, `features`, `served with`, `made with`, `topped with`, `such as`) when bound to verified named entities.
-  - `test_candidate_generation.py`: Added unit test `test_assistant_informative_turn_admission` verifying that assistant factual turns with named entities or acronyms are admitted while generic filler and non-entity sentences are rejected.
+  - `candidate_generation.py`: Expanded `_ASSISTANT_STOP_CAPS` to include English determiners, pronouns, and prepositions (`A`, `An`, `My`, `Your`, `His`, `Her`, `Its`, `Our`, `Their`, `He`, `She`, `What`, `Which`, `Who`, `Whom`, `Whose`). Updated `_is_admissible_assistant_turn()` to admit concrete informative predicates (`uses`, `implements`, `known for`, `features`, `served with`, `made with`, `topped with`, `such as`) when bound to verified named entities or acronyms.
+  - `test_candidate_generation.py`: Expanded `test_assistant_informative_turn_admission` to test the full set of generic advice rejections and concrete factual admissions.
 - **Full Test Suite Status:**
   - Command: `python -m pytest --ignore=scratch`
-  - Output: **120 passed in 1.39s** (0 failures, 0 errors, 100% pass rate).
+  - Output: **120 passed in 2.17s** (0 failures, 0 errors, 100% pass rate).
 
 ---
 
@@ -1783,33 +1800,33 @@ To solve this systematically, candidate generation was hardened with two complem
 
 A complete re-execution across all 25 preceding benchmark questions (`scratch/verify_q1_to_q25_with_patch.py`) verified **zero metric regressions** against historical artifacts:
 
-| Question ID | Category | Historical Recall@5 | Post-Batch 6 Recall@5 | Prec@5 | MRR | Delta |
-|:---|:---|:---:|:---:|:---:|:---:|:---:|
-| `94f70d80` (Q1) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
-| `bc8a6e93_abs` (Q2)| single-session-user | NaN | NaN | NaN | NaN | 0.0000 |
-| `6ade9755` (Q3) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 0.5000 | 0.0000 |
-| `bc8a6e93` (Q4) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
-| `6f9b354f` (Q5) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
-| `bc149d6b` (Q6) | multi-session | 0.5000 | 0.5000 | 0.2000 | 0.2000 | 0.0000 |
-| `5a7937c8` (Q7) | multi-session | 1.0000 | 1.0000 | 0.6000 | 1.0000 | 0.0000 |
-| `gpt4_59c863d7` (Q8)| multi-session | 0.4000 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
-| `d682f1a2` (Q9) | multi-session | 0.6667 | 0.6667 | 0.4000 | 1.0000 | 0.0000 |
-| `8979f9ec` (Q10)| multi-session | 0.5000 | 0.5000 | 0.4000 | 1.0000 | 0.0000 |
-| `fca70973` (Q11)| single-session-pref | 1.0000 | 1.0000 | 0.4000 | 1.0000 | 0.0000 |
-| `505af2f5` (Q12)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 0.0000 |
-| `75832dbd` (Q13)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
-| `1c0ddc50` (Q14)| single-session-pref | 0.5000 | 0.5000 | 0.2000 | 0.5000 | 0.0000 |
-| `b6025781` (Q15)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.5000 | 0.0000 |
-| `2a1811e2` (Q16)| temporal-reasoning | 1.0000 | 1.0000 | 0.4000 | 0.5000 | 0.0000 |
-| `gpt4_fa19884c` (Q17)| temporal-reasoning| 1.0000 | 1.0000 | 0.6000 | 1.0000 | 0.0000 |
-| `gpt4_385a5000` (Q18)| temporal-reasoning| 1.0000 | 1.0000 | 0.4000 | 1.0000 | 0.0000 |
-| `c8090214_abs` (Q19)| temporal-reasoning| 0.5000 | 0.5000 | 0.2000 | 1.0000 | 0.0000 |
-| `gpt4_483dd43c` (Q20)| temporal-reasoning| 1.0000 | 1.0000 | 0.4000 | 0.2500 | 0.0000 |
-| `6aeb4375_abs` (Q21)| knowledge-update | NaN | NaN | NaN | NaN | 0.0000 |
-| `852ce960` (Q22)| knowledge-update | 1.0000 | 1.0000 | 0.5000 | 1.0000 | 0.0000 |
-| `2133c1b5` (Q23)| knowledge-update | 1.0000 | 1.0000 | 0.4000 | 1.0000 | 0.0000 |
-| `d7c942c3` (Q24)| knowledge-update | 1.0000 | 1.0000 | 0.6000 | 1.0000 | 0.0000 |
-| `69fee5aa` (Q25)| knowledge-update | 1.0000 | 1.0000 | 0.6000 | 1.0000 | 0.0000 |
+| Question ID | Category | Historical Recall@5 | Post-Batch 6 Recall@5 | Prec@5 (Eval) | Prec@5 (Fixed-k) | MRR | Delta |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| `94f70d80` (Q1) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 1.0000 | 0.0000 |
+| `bc8a6e93_abs` (Q2)| single-session-user | NaN | NaN | NaN | NaN | NaN | 0.0000 |
+| `6ade9755` (Q3) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 0.5000 | 0.0000 |
+| `bc8a6e93` (Q4) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 1.0000 | 0.0000 |
+| `6f9b354f` (Q5) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 1.0000 | 0.0000 |
+| `bc149d6b` (Q6) | multi-session | 0.5000 | 0.5000 | 0.2000 | 0.2000 | 0.2000 | 0.0000 |
+| `5a7937c8` (Q7) | multi-session | 1.0000 | 1.0000 | 0.6000 | 0.6000 | 1.0000 | 0.0000 |
+| `gpt4_59c863d7` (Q8)| multi-session | 0.4000 | 0.4000 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
+| `d682f1a2` (Q9) | multi-session | 0.6667 | 0.6667 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
+| `8979f9ec` (Q10)| multi-session | 0.5000 | 0.5000 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
+| `fca70973` (Q11)| single-session-pref | 1.0000 | 1.0000 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
+| `505af2f5` (Q12)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 0.2000 | 0.0000 |
+| `75832dbd` (Q13)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 1.0000 | 0.0000 |
+| `1c0ddc50` (Q14)| single-session-pref | 0.5000 | 0.5000 | 0.2000 | 0.2000 | 0.5000 | 0.0000 |
+| `b6025781` (Q15)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 0.5000 | 0.0000 |
+| `2a1811e2` (Q16)| temporal-reasoning | 1.0000 | 1.0000 | 0.4000 | 0.4000 | 0.5000 | 0.0000 |
+| `gpt4_fa19884c` (Q17)| temporal-reasoning| 1.0000 | 1.0000 | 0.6000 | 0.6000 | 1.0000 | 0.0000 |
+| `gpt4_385a5000` (Q18)| temporal-reasoning| 1.0000 | 1.0000 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
+| `c8090214_abs` (Q19)| temporal-reasoning| 0.5000 | 0.5000 | 0.2000 | 0.2000 | 1.0000 | 0.0000 |
+| `gpt4_483dd43c` (Q20)| temporal-reasoning| 1.0000 | 1.0000 | 0.4000 | 0.4000 | 0.2500 | 0.0000 |
+| `6aeb4375_abs` (Q21)| knowledge-update | NaN | NaN | NaN | NaN | NaN | 0.0000 |
+| `852ce960` (Q22)| knowledge-update | 1.0000 | 1.0000 | 0.5000 | 0.4000 | 1.0000 | 0.0000 |
+| `2133c1b5` (Q23)| knowledge-update | 1.0000 | 1.0000 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
+| `d7c942c3` (Q24)| knowledge-update | 1.0000 | 1.0000 | 0.6000 | 0.6000 | 1.0000 | 0.0000 |
+| `69fee5aa` (Q25)| knowledge-update | 1.0000 | 1.0000 | 0.6000 | 0.6000 | 1.0000 | 0.0000 |
 
 ---
 
@@ -1817,13 +1834,13 @@ A complete re-execution across all 25 preceding benchmark questions (`scratch/ve
 
 Across the first 30 questions of the LongMemEval development benchmark (28 evaluable questions; Q2 and Q21 unanswerable NaN):
 
-| Cohort | Questions | Evaluated (N) | Mean Recall@5 | Mean Precision@5 | Mean MRR | Mean Storage Tokens | Context Compliance |
-|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Batch 1 (Q1–Q5)** | Single-session user facts | 4 *(Q2 NaN)* | **1.0000 (100.0%)** | 0.2000 (20.0%) | 0.8750 | 487.2 / 500 | 100% ($\le 256$) |
-| **Batch 2 (Q6–Q10)** | Multi-session facts | 5 | **0.6133 (61.3%)** | 0.4000 (40.0%) | 0.8400 | 485.6 / 500 | 100% ($\le 256$) |
-| **Batch 3 (Q11–Q15)** | Single-session preferences | 5 | **0.9000 (90.0%)** | 0.2400 (24.0%) | 0.6400 | 488.4 / 500 | 100% ($\le 256$) |
-| **Batch 4 (Q16–Q20)** | Temporal reasoning | 5 | **0.9000 (90.0%)** | 0.4000 (40.0%) | 0.7500 | 479.0 / 500 | 100% ($\le 256$) |
-| **Batch 5 (Q21–Q25)** | Knowledge update | 4 *(Q21 NaN)* | **1.0000 (100.0%)** | 0.5250 (52.5%) | **1.0000** | 478.5 / 500 | 100% ($\le 256$) |
-| **Batch 6 (Q26–Q30)** | Single-session assistant | 5 | **1.0000 (100.0%)** | 0.3500 (35.0%) | 0.4333 | 485.2 / 500 | 100% ($\le 256$) |
-| **Cumulative Q1–Q30** | **All 30 benchmark questions** | **28** | **0.8952 (89.52%)** | **0.3518 (35.18%)** | **0.7435** | **484.9 / 500** | **100% ($\le 256$)** |
+| Cohort | Questions | Evaluated (N) | Mean Recall@5 | Mean Prec@5 (Eval) | Mean Prec@5 (Fixed-k) | Mean MRR | Mean Storage Tokens | Context Compliance |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Batch 1 (Q1–Q5)** | Single-session user facts | 4 *(Q2 NaN)* | **1.0000 (100.0%)** | 0.2000 (20.0%) | 0.2000 (20.0%) | 0.8750 | 487.2 / 500 | 100% ($\le 256$) |
+| **Batch 2 (Q6–Q10)** | Multi-session facts | 5 | **0.6133 (61.3%)** | 0.4000 (40.0%) | 0.4000 (40.0%) | 0.8400 | 485.6 / 500 | 100% ($\le 256$) |
+| **Batch 3 (Q11–Q15)** | Single-session preferences | 5 | **0.9000 (90.0%)** | 0.2400 (24.0%) | 0.2400 (24.0%) | 0.6400 | 488.4 / 500 | 100% ($\le 256$) |
+| **Batch 4 (Q16–Q20)** | Temporal reasoning | 5 | **0.9000 (90.0%)** | 0.4000 (40.0%) | 0.4000 (40.0%) | 0.7500 | 479.0 / 500 | 100% ($\le 256$) |
+| **Batch 5 (Q21–Q25)** | Knowledge update | 4 *(Q21 NaN)* | **1.0000 (100.0%)** | 0.5250 (52.5%) | 0.5000 (50.0%) | **1.0000** | 478.5 / 500 | 100% ($\le 256$) |
+| **Batch 6 (Q26–Q30)** | Single-session assistant | 5 | **1.0000 (100.0%)** | 0.3500 (35.0%) | 0.2800 (28.0%) | 0.4333 | 485.2 / 500 | 100% ($\le 256$) |
+| **Cumulative Q1–Q30** | **All 30 benchmark questions** | **28** | **0.8952 (89.52%)** | **0.3518 (35.18%)** | **0.3357 (33.57%)** | **0.7435** | **484.1 / 500 (Evaluable)**<br>**484.9 / 500 (All 30)** | **100% ($\le 256$)** |
 
