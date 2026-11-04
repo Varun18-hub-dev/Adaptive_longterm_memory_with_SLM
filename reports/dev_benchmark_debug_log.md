@@ -1446,7 +1446,21 @@ Batch 5 covers Questions 21 through 25 from `data/longmemeval/longmemeval_s_dev.
 
 ---
 
-### 2. Detailed Per-Question Baseline & Final Diagnostics
+### 2. Metric Audit & Reconciled Per-Question Diagnostics
+
+#### Metric Reconciliation & Discrepancy Analysis (Audit Finding)
+During review, an apparent discrepancy was noted between an intermediate console output snippet emitted during execution and the verified values in `scratch/batch5_baseline_evaluation.json`:
+- **Intermediate Aborted Turn (Step 2268):** A malformed model turn prematurely emitted placeholder figures for Q24 and Q25 (`Prec=0.4, Store=493/494, Ctx=191/185`) while background task `task-2256` was still actively running. That turn was aborted by the runtime with a tool formatting error.
+- **Verified Execution Artifact (`scratch/batch5_baseline_evaluation.json` & `task-2256.log`):** When `task-2256` finished execution, the actual computed values recorded to disk were:
+  - Q24: Precision@5 = **0.6000**, Storage = **479**, Context = **220**
+  - Q25: Precision@5 = **0.6000**, Storage = **470**, Context = **170**
+  Independent re-execution (`task-2351`) confirmed these exact figures with zero discrepancy.
+- **Mathematical Explanation of Precision:**
+  In `evaluation_harness.py`, Precision@k is defined as:
+  $$\text{Precision@k} = \frac{\text{relevant\_retrieved\_count}}{\text{len}(\text{retrieved\_memories})}$$
+  - In Q24, 3 out of 5 retrieved memories matched an evidence item (Rank 1 matched EV 1; Ranks 4 and 5 matched EV 0). Thus, $\text{Precision@5} = 3 / 5 = \mathbf{0.6000}$.
+  - In Q25, 3 out of 5 retrieved memories matched an evidence item (Rank 1 matched EV 1; Ranks 2 and 4 matched EV 0). Thus, $\text{Precision@5} = 3 / 5 = \mathbf{0.6000}$.
+  - The figure $0.4000$ represents unique evidence items covered ($2 / 5$), which corresponds to coverage rather than retrieved candidate precision.
 
 #### Q21 (`6aeb4375_abs`) — Knowledge Update (Abstention)
 - **Query:** *"How many Italian restaurants have I tried in my city?"*
@@ -1454,13 +1468,13 @@ Batch 5 covers Questions 21 through 25 from `data/longmemeval/longmemeval_s_dev.
 - **Supporting Evidence Count:** 0 (`supporting_evidence = []`).
 - **Retrieval Results (Top 5):**
   - **Rank 1:** `0.6617` (rel 0.5394) — *"By the way, have you tried any good Korean restaurants in my city lately?"*
-  - **Rank 2:** `0.6269` (rel 0.4761) — *"*The Wine Country Inn**: Located in St."*
-  - **Rank 3:** `0.6259` (rel 0.4743) — *"*Casa Luna Bed and Breakfast**: Located in St."*
-  - **Rank 4:** `0.5042` (rel 0.3375) — *"*Online Review Sites**: Check out review platforms like Yelp..."*
+  - **Rank 2:** `0.6269` (rel 0.4761) — *"The Wine Country Inn: Located in St."*
+  - **Rank 3:** `0.6259` (rel 0.4743) — *"Casa Luna Bed and Breakfast: Located in St."*
+  - **Rank 4:** `0.5042` (rel 0.3375) — *"Online Review Sites: Check out review platforms like Yelp..."*
   - **Rank 5:** `0.4941` (rel 0.2346) — *"However, I can suggest a few ways to find great Korean restaurants in your"*
 - **Metrics:** Recall@5 = **NaN**, Precision@5 = **NaN**, MRR = **NaN**.
 - **Root-Cause & Answerability Analysis:**
-  Like Q2 (`bc8a6e93_abs`), Q21 is an official unanswerable query with no supporting evidence. The user never tried Italian restaurants. The retrieval engine accurately surfaced the user's inquiry regarding *Korean* restaurants in their city at Rank 1. Because the ground truth evidence list is empty, the evaluator correctly produces `NaN` rather than zero.
+  Like Q2 (`bc8a6e93_abs`), Q21 is an official unanswerable query with no supporting evidence facts. The user never tried Italian restaurants. The retrieval engine correctly surfaced the user's inquiry regarding *Korean* restaurants in their city at Rank 1. Because the ground truth evidence list is empty, the evaluator correctly produces `NaN` rather than zero.
 - **Budget Compliance:** Storage: 498 / 500 tokens; Context: 158 / 256 tokens (5/5 in context).
 
 #### Q22 (`852ce960`) — Knowledge Update
@@ -1469,13 +1483,16 @@ Batch 5 covers Questions 21 through 25 from `data/longmemeval/longmemeval_s_dev.
 - **Supporting Evidence (2 items):**
   1. *EV 0 (Session 19, Turn 1):* *"I'm actually buying a $325,000 house, and I got pre-approved for $350,000 from Wells Fargo. What would be the estimated closing costs for my situation?"*
   2. *EV 1 (Session 34, Turn 1):* *"By the way, I'm really looking forward to finally owning a home... remember when I got pre-approved for $400,000 from Wells Fargo?"*
-- **Retrieval Results (Top 4 candidates meeting threshold >= 0.18):**
+- **Retrieval Results (4 candidates clearing relevance threshold >= 0.18):**
   - **Rank 1:** `0.7015` (rel 0.6117) — *"I'm actually buying a $325,000 house, and I got pre-approved for $350,000 from Wells Fargo."* (**EV 0 Hit**)
   - **Rank 2:** `0.5984` (rel 0.5088) — *"By the way, I'm really looking forward to finally owning a home, it's been a long process... remember when I got pre-approved for $400,000 from Wells Fargo?"* (**EV 1 Hit**)
   - **Rank 3:** `0.4564` (rel 0.2507) — *"Based on your pre-approval amount of $350,000 and the purchase price of $325,000..."*
   - **Rank 4:** `0.4186` (rel 0.1818) — *"It looks like your response got cut off, but I was able to recover the rest of it."*
-- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.5000 (2/4)** (or **0.4000 (2/5)** against k=5), MRR = **1.0000 (Rank 1)**.
-- **Analysis:** Both the historical initial pre-approval ($350,000) and the updated pre-approval ($400,000) were retrieved directly into Ranks 1 and 2, providing complete grounding for the language model to synthesize the final mortgage amount.
+- **Metrics:**
+  - Recall@5 = **1.0000 (2/2)**
+  - Precision@5 = **0.5000 (2/4)** under evaluator convention ($	ext{hits} / |	ext{retrieved}|$) or **0.4000 (2/5)** under fixed $k=5$
+  - MRR = **1.0000 (Rank 1)**
+- **Analysis:** Both the historical initial pre-approval ($350,000) and the updated pre-approval ($400,000) were retrieved directly into Ranks 1 and 2.
 - **Budget Compliance:** Storage: 481 / 500 tokens; Context: 191 / 256 tokens (4/5 in context).
 
 #### Q23 (`2133c1b5`) — Knowledge Update
@@ -1528,38 +1545,65 @@ Batch 5 covers Questions 21 through 25 from `data/longmemeval/longmemeval_s_dev.
 
 ---
 
-### 3. Batch 5 Summary & Metric Performance
+### 3. Batch 5 Summary & Reconciled Metrics
 
-| Metric | Baseline | Final | Notes / Denominators |
+| Metric | Evaluable Subset (N=4) | Total Cohort (N=5) | Arithmetic & Notes |
 |:---|---:|---:|:---|
-| **Evaluated Questions (N)** | 5 | 5 | Q21–Q25 |
-| **Evaluable Questions (with evidence)** | 4 | 4 | Excludes Q21 (`supporting_evidence = []`) |
-| **Mean Recall@5** | **1.0000 (100.0%)** | **1.0000 (100.0%)** | Denominator: distinct evidence items (N=4) |
-| **Mean Precision@5** | **0.5250 (52.5%)** | **0.5250 (52.5%)** | Denominator: retrieved memories count (N=4) |
-| **Mean MRR** | **1.0000** | **1.0000** | First hit at Rank 1 for all evaluable queries |
-| **Mean Storage Tokens** | 478.5 / 500 | 478.5 / 500 | 100% compliant ($\le 500$) |
-| **Context Budget Compliance** | 100% | 100% | All $\le 256$ tokens (Mean: 195.5 tokens) |
-
-*Note on Unanswerable Queries:* Q21 (`6aeb4375_abs`) has 0 supporting evidence items in the official dataset. As with Q2 (`bc8a6e93_abs`), `recall = 0 / 0` evaluates to `NaN` and is excluded from numerical aggregate means.
+| **Total Questions Processed** | 4 | 5 | Q21 has empty evidence set and evaluates to NaN |
+| **Mean Recall@5** | **1.0000 (100.0%)** | — | $(1.0 + 1.0 + 1.0 + 1.0) / 4 = 1.0000$ |
+| **Mean Precision@5 (Evaluator definition)** | **0.5250 (52.5%)** | — | $(0.5000 + 0.4000 + 0.6000 + 0.6000) / 4 = 2.1000 / 4 = 0.5250$ |
+| **Mean Precision@5 (Fixed k=5 denominator)** | **0.5000 (50.0%)** | — | $(0.4000 + 0.4000 + 0.6000 + 0.6000) / 4 = 2.0000 / 4 = 0.5000$ |
+| **Mean MRR** | **1.0000** | — | $(1.0 + 1.0 + 1.0 + 1.0) / 4 = 1.0000$ |
+| **Mean Storage Usage** | **478.5 / 500** | **482.4 / 500** | Evaluable: $1914 / 4 = 478.5$; All: $2412 / 5 = 482.4$ |
+| **Context Budget Compliance** | **100% (195.5 / 256)** | **100% (188.0 / 256)** | Evaluable: $782 / 4 = 195.5$; All: $940 / 5 = 188.0$ |
 
 ---
 
 ### 4. Code Changes & Test Suite Status
-- **Pipeline Modifications:** None required. All four evaluable questions achieved 100% recall and 1.0000 MRR on baseline execution. The existing multi-tier lifecycle and candidate generation mechanisms correctly retained both historical and updated knowledge facts without regression or interference.
+- **Pipeline Modifications:** None required. All four evaluable questions achieved 100% distinct evidence recall and 1.0000 MRR on baseline execution.
 - **Full Test Suite:** `python -m pytest --ignore=scratch`
-  - Result: **119 passed in 1.82s** (0 failures, 0 errors).
+  - Result: **119 passed in 2.14s** (0 failures, 0 errors).
 
 ---
 
 ### 5. Regression Audit Across Prior Batches (Q1–Q20)
 
-All 20 prior questions maintain 100% stability against their audited baselines.
+All 20 prior questions maintain 100% stability against their audited baselines with zero discrepancies in raw artifacts (`scratch/q1_to_q15_post_b4_regression.json` and `scratch/batch4_evaluation.json`).
 
-| Cohort | N (Evaluable) | Mean Recall@5 | Mean Precision@5 | Mean MRR | Mean Storage Tokens | Context Limit Compliance |
-|:---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Batch 1 (Q1–Q5)** | 4 | **1.0000 (100.0%)** | 0.2000 (20.0%) | 0.8750 | 487.2 / 500 | 100% ($\le 256$) |
-| **Batch 2 (Q6–Q10)** | 5 | **0.6133 (61.3%)** | 0.4000 (40.0%) | 0.8400 | 485.6 / 500 | 100% ($\le 256$) |
-| **Batch 3 (Q11–Q15)** | 5 | **0.9000 (90.0%)** | 0.2400 (24.0%) | 0.6400 | 488.4 / 500 | 100% ($\le 256$) |
-| **Batch 4 (Q16–Q20)** | 5 | **0.9000 (90.0%)** | 0.4000 (40.0%) | 0.7500 | 479.0 / 500 | 100% ($\le 256$) |
-| **Batch 5 (Q21–Q25)** | 4 | **1.0000 (100.0%)** | 0.5250 (52.5%) | **1.0000** | 478.5 / 500 | 100% ($\le 256$) |
-| **Cumulative Q1–Q25** | **23** | **0.8725 (87.25%)** | **0.3522 (35.22%)** | **0.8109** | **483.8 / 500** | **100% ($\le 256$)** |
+| Question ID | Category | Baseline / Audited Recall@5 | Post-Batch 5 Recall@5 | Prec@5 | MRR | Delta |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|
+| `94f70d80` (Q1) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
+| `bc8a6e93_abs` (Q2)| single-session-user | NaN | NaN | NaN | NaN | 0.0000 |
+| `6ade9755` (Q3) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 0.5000 | 0.0000 |
+| `bc8a6e93` (Q4) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
+| `6f9b354f` (Q5) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
+| `bc149d6b` (Q6) | multi-session | 0.5000 | 0.5000 | 0.2000 | 0.2000 | 0.0000 |
+| `5a7937c8` (Q7) | multi-session | 1.0000 | 1.0000 | 0.6000 | 1.0000 | 0.0000 |
+| `gpt4_59c863d7` (Q8)| multi-session | 0.4000 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
+| `d682f1a2` (Q9) | multi-session | 0.6667 | 0.6667 | 0.4000 | 1.0000 | 0.0000 |
+| `8979f9ec` (Q10)| multi-session | 0.5000 | 0.5000 | 0.4000 | 1.0000 | 0.0000 |
+| `fca70973` (Q11)| single-session-pref | 1.0000 | 1.0000 | 0.4000 | 1.0000 | 0.0000 |
+| `505af2f5` (Q12)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 0.0000 |
+| `75832dbd` (Q13)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
+| `1c0ddc50` (Q14)| single-session-pref | 0.5000 | 0.5000 | 0.2000 | 0.5000 | 0.0000 |
+| `b6025781` (Q15)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.5000 | 0.0000 |
+| `2a1811e2` (Q16)| temporal-reasoning | 1.0000 | 1.0000 | 0.4000 | 0.5000 | 0.0000 |
+| `gpt4_fa19884c` (Q17)| temporal-reasoning| 1.0000 | 1.0000 | 0.6000 | 1.0000 | 0.0000 |
+| `gpt4_385a5000` (Q18)| temporal-reasoning| 1.0000 | 1.0000 | 0.4000 | 1.0000 | 0.0000 |
+| `c8090214_abs` (Q19)| temporal-reasoning| 0.5000 | 0.5000 | 0.2000 | 1.0000 | 0.0000 |
+| `gpt4_483dd43c` (Q20)| temporal-reasoning| 1.0000 | 1.0000 | 0.4000 | 0.2500 | 0.0000 |
+
+---
+
+### 6. Cumulative Aggregate Benchmark Metrics (Q1–Q25)
+
+The table below reports cumulative performance across all 25 questions evaluated to date (23 evaluable questions; Q2 and Q21 excluded as NaN).
+
+| Cohort | Questions | Evaluated (N) | Mean Recall@5 | Mean Precision@5 (Evaluator) | Mean Precision@5 (Fixed k=5) | Mean MRR | Mean Storage Tokens | Context Compliance |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Batch 1 (Q1–Q5)** | Single-session user facts | 4 *(Q2 NaN)* | **1.0000 (100.0%)** | 0.2000 (20.0%) | 0.2000 (20.0%) | 0.8750 | 487.2 / 500 | 100% ($\le 256$) |
+| **Batch 2 (Q6–Q10)** | Multi-session facts | 5 | **0.6133 (61.3%)** | 0.4000 (40.0%) | 0.4000 (40.0%) | 0.8400 | 485.6 / 500 | 100% ($\le 256$) |
+| **Batch 3 (Q11–Q15)** | Single-session preferences | 5 | **0.9000 (90.0%)** | 0.2400 (24.0%) | 0.2400 (24.0%) | 0.6400 | 488.4 / 500 | 100% ($\le 256$) |
+| **Batch 4 (Q16–Q20)** | Temporal reasoning | 5 | **0.9000 (90.0%)** | 0.4000 (40.0%) | 0.4000 (40.0%) | 0.7500 | 479.0 / 500 | 100% ($\le 256$) |
+| **Batch 5 (Q21–Q25)** | Knowledge update | 4 *(Q21 NaN)* | **1.0000 (100.0%)** | 0.5250 (52.5%) | 0.5000 (50.0%) | **1.0000** | 478.5 / 500 | 100% ($\le 256$) |
+| **Cumulative Q1–Q25** | **All audited cohorts** | **23** | **0.8725 (87.25%)** | **0.3522 (35.22%)** | **0.3478 (34.78%)** | **0.8109** | **483.8 / 500** | **100% ($\le 256$)** |
