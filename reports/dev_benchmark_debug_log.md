@@ -1427,3 +1427,139 @@ All 15 prior benchmark questions were re-executed under identical runtime condit
 - **Remaining Limitations:**
   1. In complex compound temporal questions (e.g. Q16), assistant turns that rephrase user facts may score high relevance due to repetition. While both dates were present in context, ensuring user-attributed propositions consistently outrank assistant re-summaries remains an active area for candidate attribution ranking.
   2. Cross-clause temporal dependencies across disjoint sessions (as observed in Q14 and Q19) remain bounded by proposition extraction atomicity.
+
+
+---
+
+## Batch 5 — Q21–Q25
+
+### 1. Dataset Grounding & Cohort Overview
+Batch 5 covers Questions 21 through 25 from `data/longmemeval/longmemeval_s_dev.json`, all belonging to the `knowledge-update` category. These questions evaluate the system's ability to track changing personal facts, superseded states, or identify unanswerable queries where an asserted premise was never established.
+
+| Q# | Question ID | Category | Sessions | Evidence Count | Query Summary | Expected Answer |
+|:---:|:---|:---|:---:|:---:|:---|:---|
+| **Q21** | `6aeb4375_abs` | knowledge-update | 46 | 0 | Italian restaurants tried in user's city | *The information provided is not enough. You mentioned trying Korean restaurants but not Italian restaurants.* |
+| **Q22** | `852ce960` | knowledge-update | 39 | 2 | Mortgage pre-approval amount from Wells Fargo | *$400,000* |
+| **Q23** | `2133c1b5` | knowledge-update | 51 | 2 | Duration living in Harajuku apartment | *3 months* |
+| **Q24** | `d7c942c3` | knowledge-update | 49 | 2 | Whether mom uses same grocery list method | *Yes.* |
+| **Q25** | `69fee5aa` | knowledge-update | 49 | 2 | Count of pre-1920 American coins in collection | *38* |
+
+---
+
+### 2. Detailed Per-Question Baseline & Final Diagnostics
+
+#### Q21 (`6aeb4375_abs`) — Knowledge Update (Abstention)
+- **Query:** *"How many Italian restaurants have I tried in my city?"*
+- **Expected Answer:** *"The information provided is not enough. You mentioned trying Korean restaurants but not Italian restaurants."*
+- **Supporting Evidence Count:** 0 (`supporting_evidence = []`).
+- **Retrieval Results (Top 5):**
+  - **Rank 1:** `0.6617` (rel 0.5394) — *"By the way, have you tried any good Korean restaurants in my city lately?"*
+  - **Rank 2:** `0.6269` (rel 0.4761) — *"*The Wine Country Inn**: Located in St."*
+  - **Rank 3:** `0.6259` (rel 0.4743) — *"*Casa Luna Bed and Breakfast**: Located in St."*
+  - **Rank 4:** `0.5042` (rel 0.3375) — *"*Online Review Sites**: Check out review platforms like Yelp..."*
+  - **Rank 5:** `0.4941` (rel 0.2346) — *"However, I can suggest a few ways to find great Korean restaurants in your"*
+- **Metrics:** Recall@5 = **NaN**, Precision@5 = **NaN**, MRR = **NaN**.
+- **Root-Cause & Answerability Analysis:**
+  Like Q2 (`bc8a6e93_abs`), Q21 is an official unanswerable query with no supporting evidence. The user never tried Italian restaurants. The retrieval engine accurately surfaced the user's inquiry regarding *Korean* restaurants in their city at Rank 1. Because the ground truth evidence list is empty, the evaluator correctly produces `NaN` rather than zero.
+- **Budget Compliance:** Storage: 498 / 500 tokens; Context: 158 / 256 tokens (5/5 in context).
+
+#### Q22 (`852ce960`) — Knowledge Update
+- **Query:** *"What was the amount I was pre-approved for when I got my mortgage from Wells Fargo?"*
+- **Expected Answer:** *"$400,000"*
+- **Supporting Evidence (2 items):**
+  1. *EV 0 (Session 19, Turn 1):* *"I'm actually buying a $325,000 house, and I got pre-approved for $350,000 from Wells Fargo. What would be the estimated closing costs for my situation?"*
+  2. *EV 1 (Session 34, Turn 1):* *"By the way, I'm really looking forward to finally owning a home... remember when I got pre-approved for $400,000 from Wells Fargo?"*
+- **Retrieval Results (Top 4 candidates meeting threshold >= 0.18):**
+  - **Rank 1:** `0.7015` (rel 0.6117) — *"I'm actually buying a $325,000 house, and I got pre-approved for $350,000 from Wells Fargo."* (**EV 0 Hit**)
+  - **Rank 2:** `0.5984` (rel 0.5088) — *"By the way, I'm really looking forward to finally owning a home, it's been a long process... remember when I got pre-approved for $400,000 from Wells Fargo?"* (**EV 1 Hit**)
+  - **Rank 3:** `0.4564` (rel 0.2507) — *"Based on your pre-approval amount of $350,000 and the purchase price of $325,000..."*
+  - **Rank 4:** `0.4186` (rel 0.1818) — *"It looks like your response got cut off, but I was able to recover the rest of it."*
+- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.5000 (2/4)** (or **0.4000 (2/5)** against k=5), MRR = **1.0000 (Rank 1)**.
+- **Analysis:** Both the historical initial pre-approval ($350,000) and the updated pre-approval ($400,000) were retrieved directly into Ranks 1 and 2, providing complete grounding for the language model to synthesize the final mortgage amount.
+- **Budget Compliance:** Storage: 481 / 500 tokens; Context: 191 / 256 tokens (4/5 in context).
+
+#### Q23 (`2133c1b5`) — Knowledge Update
+- **Query:** *"How long have I been living in my current apartment in Harajuku?"*
+- **Expected Answer:** *"3 months"*
+- **Supporting Evidence (2 items):**
+  1. *EV 0 (Session 13, Turn 1):* *"I'm still getting used to living in Tokyo, but I've been enjoying the independence of my new studio apartment in Harajuku - it's been a month now, and the commute to work is really convenient..."*
+  2. *EV 1 (Session 34, Turn 1):* *"By the way, I've been living in Harajuku for 3 months now, and I'm still discovering new hidden gems in the neighborhood."*
+- **Retrieval Results (Top 5):**
+  - **Rank 1:** `0.5757` (rel 0.4821) — *"I'm still getting used to living in Tokyo, but I've been enjoying the independence of my new studio apartment in Harajuku - it's been a month now..."* (**EV 0 Hit**)
+  - **Rank 2:** `0.5111` (rel 0.2001) — *"I'm planning a week-long vacation to Hawaii in December with my family."*
+  - **Rank 3:** `0.4990` (rel 0.3426) — *"By the way, I've been living in Harajuku for 3 months now, and I'm still discovering new hidden gems in the neighborhood."* (**EV 1 Hit**)
+  - **Rank 4:** `0.4902` (rel 0.2084) — *"The Kawai Shrine (), on the other hand, is a smaller, lesser-known shrine..."*
+  - **Rank 5:** `0.4855` (rel 0.2189) — *"My living room gets plenty of natural light, especially in the afternoon."*
+- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.4000 (2/5)**, MRR = **1.0000 (Rank 1)**.
+- **Analysis:** Both the 1-month baseline statement and the 3-month update were retrieved into Ranks 1 and 3.
+- **Budget Compliance:** Storage: 484 / 500 tokens; Context: 201 / 256 tokens (5/5 in context).
+
+#### Q24 (`d7c942c3`) — Knowledge Update
+- **Query:** *"Is my mom using the same grocery list method as me?"*
+- **Expected Answer:** *"Yes."*
+- **Supporting Evidence (2 items):**
+  1. *EV 0 (Session 14, Turn 1):* *"By the way, I'm glad I'm not the only one who's a fan of that new grocery list app. I've been trying to get my mom to use it too, but she's still stuck on her old paper list..."*
+  2. *EV 1 (Session 37, Turn 1):* *"By the way, I was just thinking, my mom is actually using the same grocery list app as me now, so we can easily share lists and keep track of what we need..."*
+- **Retrieval Results (Top 5):**
+  - **Rank 1:** `0.6688` (rel 0.6513) — *"By the way, I was just thinking, my mom is actually using the same grocery list app as me now, so we can easily share lists..."* (**EV 1 Hit**)
+  - **Rank 2:** `0.5879` (rel 0.4897) — *"And by the way, I'm using that new grocery list app to keep track of all the ingredients I need..."*
+  - **Rank 3:** `0.5135` (rel 0.3544) — *"It's been really helpful in organizing my grocery lists and keeping me on track with my meal planning..."*
+  - **Rank 4:** `0.5105` (rel 0.3489) — *"I've been trying to get my mom to use it too, but she's still stuck on her old paper list."* (**EV 0 Hit**)
+  - **Rank 5:** `0.5092` (rel 0.3466) — *"By the way, I'm glad I'm not the only one who's a fan of that new grocery list app."* (**EV 0 Hit**)
+- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.6000 (3/5)**, MRR = **1.0000 (Rank 1)**.
+- **Analysis:** EV 1 (mom using app now) is correctly prioritized at Rank 1, while EV 0 (mom previously on paper list) is retained at Ranks 4 and 5.
+- **Budget Compliance:** Storage: 479 / 500 tokens; Context: 220 / 256 tokens (5/5 in context).
+
+#### Q25 (`69fee5aa`) — Knowledge Update
+- **Query:** *"How many pre-1920 American coins do I have in my collection?"*
+- **Expected Answer:** *"38"*
+- **Supporting Evidence (2 items):**
+  1. *EV 0 (Session 19, Turn 1):* *"By the way, I was thinking of organizing my pre-1920 American coins by denomination and mint mark. I have a total of 37 coins in that collection, and I think it would be cool to see them all displayed together..."*
+  2. *EV 1 (Session 34, Turn 1):* *"By the way, I just added a new coin to my collection of pre-1920 American coins - a 1915-S Barber quarter."*
+- **Retrieval Results (Top 5):**
+  - **Rank 1:** `0.6749` (rel 0.6625) — *"By the way, I just added a new coin to my collection of pre-1920 American coins - a 1915-S Barber quarter."* (**EV 1 Hit**)
+  - **Rank 2:** `0.6254` (rel 0.5578) — *"By the way, I was thinking of organizing my pre-1920 American coins by denomination and mint mark."* (**EV 0 Hit**)
+  - **Rank 3:** `0.5334` (rel 0.3060) — *"I've got another question about my coin collection."*
+  - **Rank 4:** `0.4860` (rel 0.3045) — *"I have a total of 37 coins in that collection, and I think it would be cool to see them all displayed together."* (**EV 0 Hit**)
+  - **Rank 5:** `0.4820` (rel 0.2126) — *"I've been looking to add a few more cameras to my collection."*
+- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.6000 (3/5)**, MRR = **1.0000 (Rank 1)**.
+- **Analysis:** The update event (EV 1, new Barber quarter) achieved Rank 1, while the baseline collection fact (EV 0, 37 coins) was captured at Ranks 2 and 4.
+- **Budget Compliance:** Storage: 470 / 500 tokens; Context: 170 / 256 tokens (5/5 in context).
+
+---
+
+### 3. Batch 5 Summary & Metric Performance
+
+| Metric | Baseline | Final | Notes / Denominators |
+|:---|---:|---:|:---|
+| **Evaluated Questions (N)** | 5 | 5 | Q21–Q25 |
+| **Evaluable Questions (with evidence)** | 4 | 4 | Excludes Q21 (`supporting_evidence = []`) |
+| **Mean Recall@5** | **1.0000 (100.0%)** | **1.0000 (100.0%)** | Denominator: distinct evidence items (N=4) |
+| **Mean Precision@5** | **0.5250 (52.5%)** | **0.5250 (52.5%)** | Denominator: retrieved memories count (N=4) |
+| **Mean MRR** | **1.0000** | **1.0000** | First hit at Rank 1 for all evaluable queries |
+| **Mean Storage Tokens** | 478.5 / 500 | 478.5 / 500 | 100% compliant ($\le 500$) |
+| **Context Budget Compliance** | 100% | 100% | All $\le 256$ tokens (Mean: 195.5 tokens) |
+
+*Note on Unanswerable Queries:* Q21 (`6aeb4375_abs`) has 0 supporting evidence items in the official dataset. As with Q2 (`bc8a6e93_abs`), `recall = 0 / 0` evaluates to `NaN` and is excluded from numerical aggregate means.
+
+---
+
+### 4. Code Changes & Test Suite Status
+- **Pipeline Modifications:** None required. All four evaluable questions achieved 100% recall and 1.0000 MRR on baseline execution. The existing multi-tier lifecycle and candidate generation mechanisms correctly retained both historical and updated knowledge facts without regression or interference.
+- **Full Test Suite:** `python -m pytest --ignore=scratch`
+  - Result: **119 passed in 1.82s** (0 failures, 0 errors).
+
+---
+
+### 5. Regression Audit Across Prior Batches (Q1–Q20)
+
+All 20 prior questions maintain 100% stability against their audited baselines.
+
+| Cohort | N (Evaluable) | Mean Recall@5 | Mean Precision@5 | Mean MRR | Mean Storage Tokens | Context Limit Compliance |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Batch 1 (Q1–Q5)** | 4 | **1.0000 (100.0%)** | 0.2000 (20.0%) | 0.8750 | 487.2 / 500 | 100% ($\le 256$) |
+| **Batch 2 (Q6–Q10)** | 5 | **0.6133 (61.3%)** | 0.4000 (40.0%) | 0.8400 | 485.6 / 500 | 100% ($\le 256$) |
+| **Batch 3 (Q11–Q15)** | 5 | **0.9000 (90.0%)** | 0.2400 (24.0%) | 0.6400 | 488.4 / 500 | 100% ($\le 256$) |
+| **Batch 4 (Q16–Q20)** | 5 | **0.9000 (90.0%)** | 0.4000 (40.0%) | 0.7500 | 479.0 / 500 | 100% ($\le 256$) |
+| **Batch 5 (Q21–Q25)** | 4 | **1.0000 (100.0%)** | 0.5250 (52.5%) | **1.0000** | 478.5 / 500 | 100% ($\le 256$) |
+| **Cumulative Q1–Q25** | **23** | **0.8725 (87.25%)** | **0.3522 (35.22%)** | **0.8109** | **483.8 / 500** | **100% ($\le 256$)** |
