@@ -160,6 +160,46 @@ class TestCandidateGenerationCases(unittest.TestCase):
         self.assertTrue(neg_mem.metadata.get("is_negation", False))
 
 
+    def test_assistant_informative_turn_admission(self):
+        # Concrete informative facts with named entities or acronyms should be admitted
+        self.assertTrue(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "SIAC_GEE uses the 6S radiative transfer model for atmospheric correction."
+            )
+        )
+        self.assertTrue(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Grilled Snapper with Mango Salsa is topped with a fruity and spicy salsa."
+            )
+        )
+        self.assertTrue(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Patagonia, an outdoor clothing and gear company, is known for its commitment to sustainability."
+            )
+        )
+        self.assertTrue(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Requiring two-factor authentication, such as biometric authentication or one-time passwords (OTP), enhances security."
+            )
+        )
+        # Generic advice, filler, or sentences without concrete named entities must be rejected
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "The biggest threats to giraffe populations are human-related activities such as habitat destruction."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Let me know if you need any more recommendations."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "I hope this helps you with your planning."
+            )
+        )
+
+
 class TestSLMAndHybridExtraction(unittest.TestCase):
     def test_slm_candidate_extractor_with_fake_llm(self):
         mock_response = json.dumps([

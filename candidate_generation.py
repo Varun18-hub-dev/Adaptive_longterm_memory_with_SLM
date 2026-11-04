@@ -188,6 +188,27 @@ class BaseCandidateExtractor(ABC):
         pass
 
 
+_ASSISTANT_STOP_CAPS = {
+    "The", "This", "These", "Those", "There", "Here", "Some", "Many", "All", "Each", "Every",
+    "In", "On", "At", "For", "To", "With", "By", "From", "As", "It", "They", "We", "You",
+    "One", "Two", "Three", "First", "Second", "Third", "Another", "Other", "However", "Moreover",
+    "Furthermore", "Therefore", "Additionally", "Yes", "No", "Please", "Sure"
+}
+
+def _has_concrete_named_entity(text: str) -> bool:
+    acronym_pattern = r"\b(?:[A-Z0-9_]*[A-Z][0-9]|[0-9][A-Z]|[A-Z]{2,}|[A-Z][a-z]+[A-Z][A-Za-z0-9_]*)\b"
+    if re.search(acronym_pattern, text):
+        return True
+    for m in re.finditer(r"\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b", text):
+        w1, w2 = m.group(1), m.group(2)
+        if w1 not in _ASSISTANT_STOP_CAPS or w2 not in _ASSISTANT_STOP_CAPS:
+            return True
+    words = re.findall(r"\b[A-Z][a-z]+\b", text)
+    for w in words:
+        if w not in _ASSISTANT_STOP_CAPS:
+            return True
+    return False
+
 class HeuristicCandidateExtractor(BaseCandidateExtractor):
     """
     Hardened heuristic candidate extractor:
@@ -235,15 +256,14 @@ class HeuristicCandidateExtractor(BaseCandidateExtractor):
         if is_filler_sentence(text):
             return False
 
-        recommendation_pattern = r"\b(check out|visit|try|consider|recommend|suggest|offers?|provides?|includes?)\b"
-        entity_pattern = r"\b[A-Z][A-Za-z0-9&'-]*(?:\s+(?:[A-Z][A-Za-z0-9&'-]*|of|the|in|at|&)){0,4}\b"
-        has_recommendation = re.search(recommendation_pattern, text, re.IGNORECASE)
-        has_named_entity = re.search(entity_pattern, text)
+        informative_pattern = r"\b(check out|visit|try|consider|recommend|suggest|offers?|provides?|includes?|uses?|utilizes?|implements?|known for|features?|served with|made with|topped with|such as)\b"
+        has_informative = re.search(informative_pattern, text, re.IGNORECASE)
+        has_named_entity = _has_concrete_named_entity(text)
         has_amount = re.search(r"(?:\$\s*\d+(?:\.\d{1,2})?|\b\d+(?:\.\d{1,2})?\s*(?:USD|dollars|rupees|INR)\b)", text, re.IGNORECASE)
         factual_anchor = re.search(r"\b(fee|cost|price|paid|spent|medication|subscription|appointment|consultation|dose|quantity|duration)\b", text_lower)
 
         return bool(
-            (has_recommendation and has_named_entity)
+            (has_informative and has_named_entity)
             or (has_amount and factual_anchor)
         )
 
