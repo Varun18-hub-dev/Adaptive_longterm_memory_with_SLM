@@ -752,5 +752,104 @@ class TestBatch3PreferenceAndDomainBridging(unittest.TestCase):
 
 
 
+    def test_cultural_festival_celebration_bridging(self):
+        """Cultural queries mentioning 'festival' must bridge to memories mentioning 'celebration'."""
+        query = "How many days had passed between the Hindu festival of Holi and the Sunday mass?"
+        mem_target = MemoryItem(
+            id="m_holi",
+            content="I attended the Holi celebration at my local temple on February 26th and threw colors.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s1",
+            timestamp=100.0,
+        )
+        mem_unrelated_celebration = MemoryItem(
+            id="m_bday",
+            content="We attended a birthday celebration at the pizza restaurant for my nephew.",
+            memory_type=MemoryType.EPISODIC,
+            source_session_id="s2",
+            timestamp=100.0,
+        )
+        rel_target = compute_query_relevance(query, mem_target)
+        rel_unrelated = compute_query_relevance(query, mem_unrelated_celebration)
+        self.assertGreaterEqual(rel_target, 0.18)
+        self.assertGreater(rel_target, rel_unrelated)
+        self.assertLess(rel_unrelated, 0.18)
+
+    def test_domain_bridging_no_regression(self):
+        """Verify academic, culinary, and faith domain bridging remain active without regressions."""
+        # Faith
+        q_faith = "Where is the Catholic church located?"
+        m_faith = MemoryItem(id="f1", content="I attend Mass at St. Joseph parish every week.", memory_type=MemoryType.EPISODIC, source_session_id="s1", timestamp=100.0)
+        self.assertGreaterEqual(compute_query_relevance(q_faith, m_faith), 0.18)
+
+        # Academic
+        q_acad = "Any recent research papers or conferences?"
+        m_acad = MemoryItem(id="a1", content="I track recent advancements in neural network representations.", memory_type=MemoryType.SEMANTIC, source_session_id="s1", timestamp=100.0)
+        self.assertGreaterEqual(compute_query_relevance(q_acad, m_acad), 0.18)
+
+        # Culinary
+        q_rec = "Any good dinner recipes?"
+        m_rec = MemoryItem(id="r1", content="I've been making roasted vegetable bowls with quinoa.", memory_type=MemoryType.EPISODIC, source_session_id="s1", timestamp=100.0)
+        self.assertGreaterEqual(compute_query_relevance(q_rec, m_rec), 0.18)
+
+    def test_relevance_anchored_historical_boost(self):
+        """Historical predecessor boost (+0.25) must require relevance >= 0.25 to prevent unrelated distractors from rising."""
+        query = "Which show did I start watching first, 'The Crown' or 'Game of Thrones'?"
+        # Target historical memory (relevant, superseded):
+        mem_target = MemoryItem(
+            id="m_crown",
+            content="I just finished binge-watching the third season of 'The Crown' on Netflix.",
+            memory_type=MemoryType.EPISODIC,
+            lifecycle_status=LifecycleStatus.SUPERSEDED,
+            source_session_id="s1",
+            timestamp=1000.0,
+        )
+        # Distractor superseded memory (unrelated show):
+        mem_distractor = MemoryItem(
+            id="m_maisel",
+            content="I just finished watching 'The Marvelous Mrs. Maisel' on Amazon Prime.",
+            memory_type=MemoryType.EPISODIC,
+            lifecycle_status=LifecycleStatus.SUPERSEDED,
+            source_session_id="s2",
+            timestamp=2000.0,
+        )
+        rel_target = compute_query_relevance(query, mem_target)
+        rel_dist = compute_query_relevance(query, mem_distractor)
+        self.assertGreaterEqual(rel_target, 0.25)
+        self.assertLess(rel_dist, 0.25)
+
+        # Retrieve in a historical context
+        results = retrieve_memories(
+            query=query,
+            episodic_store=[mem_target, mem_distractor],
+            semantic_store=[],
+            top_k=2
+        )
+        retrieved_ids = [m.id for m, sc in results]
+        self.assertIn("m_crown", retrieved_ids)
+        # Target must score significantly higher than distractor
+        scores = {m.id: sc for m, sc in results}
+        self.assertGreater(scores["m_crown"], scores.get("m_maisel", 0.0))
+
+    def test_current_query_excludes_superseded_memory(self):
+        """Current-state queries must strictly exclude superseded memories regardless of relevance."""
+        query = "What TV show am I watching right now?"
+        mem_superseded = MemoryItem(
+            id="m_old_show",
+            content="I am currently watching The Crown every evening.",
+            memory_type=MemoryType.EPISODIC,
+            lifecycle_status=LifecycleStatus.SUPERSEDED,
+            source_session_id="s1",
+            timestamp=1000.0,
+        )
+        results = retrieve_memories(
+            query=query,
+            episodic_store=[mem_superseded],
+            semantic_store=[],
+            top_k=5
+        )
+        self.assertEqual(len(results), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

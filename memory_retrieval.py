@@ -234,6 +234,12 @@ def compute_query_relevance(query: str, memory: MemoryItem) -> float:
         if (q_content_words & recipe_synonyms) and (m_content_words & recipe_synonyms):
             intersection = intersection | {"_recipe_synonym"}
 
+    # 10. Cultural & festival event bridging
+    event_synonyms = {"festival", "festivals", "celebration", "celebrations", "observance", "holiday", "holidays"}
+    if not (q_content_words & m_content_words & event_synonyms):
+        if (q_content_words & event_synonyms) and (m_content_words & event_synonyms):
+            intersection = intersection | {"_event_synonym"}
+
     content_overlap = len(intersection) / max(1, len(q_content_words))
 
     # Slot matching & domain affinity
@@ -340,7 +346,10 @@ def retrieve_memories(
         )
 
         if is_hist and (status == LifecycleStatus.SUPERSEDED or mem.metadata.get("historical_predecessors")):
-            score += 0.25
+            # Require meaningful relevance anchoring to prevent low-relevance superseded distractors
+            # from overriding genuinely relevant contemporary or historical memories.
+            if relevance >= 0.25:
+                score += 0.25
 
         scored_candidates.append((mem, round(score, 4)))
 

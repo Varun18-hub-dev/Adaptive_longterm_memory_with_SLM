@@ -1224,3 +1224,206 @@ The table below reflects the audited evaluation across Questions 1 through 15 un
 ### 8.7 Test Suite Execution Status
 - Command: `python -m pytest --ignore=scratch`
 - Result: **115 passed in 2.07s** (0 failures, 0 errors).
+
+
+---
+
+## 9. Batch 4 Evaluation & Diagnostic Audit (Questions 16–20: Temporal Reasoning)
+
+### 9.1 Dataset Grounding & Metadata
+Batch 4 covers Questions 16 through 20 from `data/longmemeval/longmemeval_s_dev.json`, all belonging to the `temporal-reasoning` category. Each question evaluates temporal ordering, elapsed time calculations, or premise validity across extended multi-session dialogues.
+
+| Q# | Question ID | Category | Sessions | Supporting Evidence Count | Query Summary |
+|:---:|:---|:---|:---:|:---:|:---|
+| **Q16** | `2a1811e2` | temporal-reasoning | 50 | 2 | Days between Hindu festival of Holi (Feb 26) and Sunday mass at St. Mary's Church (Mar 19). |
+| **Q17** | `gpt4_fa19884c` | temporal-reasoning | 52 | 2 | Days between playing along on old keyboard and discovering a bluegrass band. |
+| **Q18** | `gpt4_385a5000` | temporal-reasoning | 51 | 2 | Which seeds started first: tomatoes (Feb 20) or marigolds (Mar 3). |
+| **Q19** | `c8090214_abs` | temporal-reasoning | 53 | 2 | Abstention: days before iPad purchase user attended Holiday Market (iPad never bought). |
+| **Q20** | `gpt4_483dd43c` | temporal-reasoning | 50 | 2 | Which show started watching first: *The Crown* or *Game of Thrones*. |
+
+---
+
+### 9.2 Critical Audit: Q19 Ground Truth & Answerability (`c8090214_abs`)
+
+#### 1. Dataset Verification
+- **Query:** *"How many days before I bought my iPad did I attend the Holiday Market?"*
+- **Expected Answer:** *"The information provided is not enough. You mentioned getting the iPhone 13 Pro and attending the market, but you did not mention buying an iPad."*
+- **Official Supporting Evidence (2 items):**
+  1. *Turn A (Session 36, Turn 0):* *"I'm looking for some gift ideas for my sister's birthday... By the way, I attended the annual Holiday Market at the local mall a week before Black Friday..."*
+  2. *Turn B (Session 36, Turn 8):* *"I think I'll keep it simple... By the way, speaking of birthdays, I attended the annual Holiday Market at the local mall a week before Black Friday..."*
+- **Additional Grounding in Dialogue:** In Session 39 Turn 0, the user purchased an iPhone 13 Pro on Black Friday from Best Buy. The user never bought an iPad.
+
+#### 2. Answerability & Evidence Interpretation
+- The suffix `_abs` denotes an **abstention / unanswerable query** with a false premise (analogous to Q2 `bc8a6e93_abs`).
+- Unlike Q2 (which had `supporting_evidence = []` and therefore evaluated to `NaN`), Q19 provides 2 explicit supporting evidence items documenting the true event (attending the Holiday Market one week before Black Friday).
+- In retrieval, our engine retrieves the Holiday Market memory at **Rank 1** (score 0.5187, MRR = 1.0).
+- Because Turn B is a near-duplicate re-statement of Turn A within the same session, our deduplication policy prevents redundant duplicate items from occupying scarce prompt budget. Thus, 1 of the 2 duplicate evidence turns is retrieved into the top 5, resulting in **Recall@5 = 0.5000 (1/2)**, **Precision@5 = 0.2000 (1/5)**, and **MRR = 1.0000**.
+- **Conclusion:** Q19 is fully grounded and compliant; the 0.5000 recall represents complete non-redundant coverage of the single unique historical event present in the dialogue.
+
+---
+
+### 9.3 Architectural Refinements & Root-Cause Resolutions
+
+#### 1. Q20: Relevance-Anchored Historical Predecessor Boost
+- **Defect Diagnosed:** In `retrieve_memories()`, queries detected as historical (`is_historical_query()`) previously applied an unanchored `+0.25` score boost to all superseded memories (`mem.lifecycle_status == LifecycleStatus.SUPERSEDED`). In Q20 (*"Which show did I start watching first..."*), an unrelated superseded memory (*"The Marvelous Mrs. Maisel"*) with low relevance ($0.2015$) received the $+0.25$ boost, elevating its score to $0.6782$ (Rank 1). This displaced the relevant historical predecessor *The Crown* ($0.5201$) to Rank 6, just behind *Game of Thrones* ($0.5210$) at Rank 5.
+- **Principled Fix:** Historical predecessor boosts now require **meaningful query relevance anchoring** (`relevance >= 0.25`), analogous to the slot-boost anchoring established in Batch 1.
+  ```python
+  if is_hist and (status == LifecycleStatus.SUPERSEDED or mem.metadata.get("historical_predecessors")):
+      if relevance >= 0.25:
+          score += 0.25
+  ```
+- **Outcome:** The unrelated distractor drops out of the top ranks; *The Crown* advances from Rank 6 to **Rank 5**, and *Game of Thrones* advances to **Rank 4**, lifting Q20 Recall@5 from **0.5000 to 1.0000**.
+
+#### 2. Q16: Cultural Event & Festival Semantic Bridging
+- **Defect Diagnosed:** In Q16 (*"Hindu festival of Holi and the Sunday mass"*), the query keyword was `festival`, while the user memory used `celebration` (*"Holi celebration at my local temple"*). The compound query diluted token overlap, leaving relevance at $0.1378$ (below the $0.18$ pruning threshold).
+- **Principled Fix:** Added cultural and festival event synonym bridging in `compute_query_relevance`:
+  ```python
+  event_synonyms = {"festival", "festivals", "celebration", "celebrations", "observance", "holiday", "holidays"}
+  if not (q_content_words & m_content_words & event_synonyms):
+      if (q_content_words & event_synonyms) and (m_content_words & event_synonyms):
+          intersection = intersection | {"_event_synonym"}
+  ```
+- **Outcome:** Both evidence items enter the top 5 (EV 0 at Rank 2, EV 1 at Rank 5), lifting Q16 Recall@5 from **0.5000 to 1.0000**.
+
+---
+
+### 9.4 Per-Question Retrieval Traces (Batch 4)
+
+#### Q16 (`2a1811e2`) — Temporal Reasoning
+- **Query:** *"How many days had passed between the Hindu festival of Holi and the Sunday mass at St. Mary's Church?"*
+- **Expected Answer:** *"21 days. 22 days (including the last day) is also acceptable."*
+- **Supporting Evidence:**
+  1. EV 0: Session 18 Turn 1 (*"Holi celebration at local temple on February 26th"*)
+  2. EV 1: Session 26 Turn 1 (*"Sunday mass at St. Mary's Church on March 19th"*)
+- **Baseline vs Final Top 5:**
+  - *Baseline:* Rank 1 (0.4922, Mary's Church), Rank 2 (0.4825, assistant Holi note), Rank 3 (0.4668, assistant inquiry), Rank 4 (0.4607, [EV 1 hit]), Rank 5 (0.4567, Hindu festivals). EV 0 was pruned.
+  - *Final:*
+    - **Rank 1:** `0.4993` (rel 0.2441) — *"Would you like to know more about other Hindu festivals or traditions?"*
+    - **Rank 2:** `0.4963` (rel 0.2387) — *"I'm looking for some information on Hindu festivals."* (**EV 0 Hit**)
+    - **Rank 3:** `0.4922` (rel 0.2393) — *"Mary's Church last Sunday."*
+    - **Rank 4:** `0.4825` (rel 0.2981) — *"However, I noticed that you mentioned attending the Hindu festival of Holi at the local temple on February 26th."*
+    - **Rank 5:** `0.4607` (rel 0.2813) — *"By the way, I just got back from Sunday mass at St."* (**EV 1 Hit**)
+- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.4000 (2/5)**, MRR = **0.5000 (Rank 2)**.
+- **Budget Compliance:** Storage: 475 / 500 tokens; Context: 133 / 256 tokens (5/5 memories in context).
+
+#### Q17 (`gpt4_fa19884c`) — Temporal Reasoning
+- **Query:** *"How many days passed between the day I started playing along to my favorite songs on my old keyboard and the day I discovered a bluegrass band?"*
+- **Expected Answer:** *"6 days. 7 days is also acceptable."*
+- **Supporting Evidence:**
+  1. EV 0: Session 18 Turn 9 (*"playing along to my favorite songs on my old keyboard"*)
+  2. EV 1: Session 16 Turn 2 / Session 37 Turn 1 (*"discovered a bluegrass band"*)
+- **Final Top 5:**
+  - **Rank 1:** `0.6009` (rel 0.5278) — *"By the way, I started playing along to my favorite songs on my old keyboard"* (**EV 0 Hit**)
+  - **Rank 2:** `0.5736` (rel 0.3791) — *"Also, how did you find playing along to your favorite songs on the keyboard"*
+  - **Rank 3:** `0.4937` (rel 0.3185) — *"As for playing along to my favorite songs, it was actually a lot easier tha"*
+  - **Rank 4:** `0.4862` (rel 0.3048) — *"I've been listening to a lot of music featuring the piano, which inspired m"* (**EV 0 Hit**)
+  - **Rank 5:** `0.4664` (rel 0.2834) — *"I'm thinking of exploring bluegrass music more, and I recently discovered a"* (**EV 1 Hit**)
+- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.6000 (3/5)**, MRR = **1.0000 (Rank 1)**.
+- **Budget Compliance:** Storage: 481 / 500 tokens; Context: 197 / 256 tokens (5/5 memories in context).
+
+#### Q18 (`gpt4_385a5000`) — Temporal Reasoning
+- **Query:** *"Which seeds were started first, the tomatoes or the marigolds?"*
+- **Expected Answer:** *"Tomatoes"*
+- **Supporting Evidence:**
+  1. EV 0: Session 11 Turn 1 (*"marigold seeds that arrived on March 3rd"*)
+  2. EV 1: Session 48 Turn 1 (*"started seeds indoors on Feb 20: tomatoes, peppers, cucumbers"*)
+- **Final Top 5:**
+  - **Rank 1:** `0.5627` (rel 0.4584) — *"By the way, I just started some marigold seeds that arrived on March 3rd, a"* (**EV 0 Hit**)
+  - **Rank 2:** `0.5606` (rel 0.4546) — *"By the way, I've been starting seeds indoors under grow lights in my baseme"* (**EV 1 Hit**)
+  - **Rank 3:** `0.5129` (rel 0.2033) — *"Trying out Aquarium Log's free version first will give you a good feel for"*
+  - **Rank 4:** `0.4790` (rel 0.2072) — *"This provides a gentle, supportive structure for your marigolds to grow thr"*
+  - **Rank 5:** `0.4789` (rel 0.2070) — *"I'm thinking of transplanting my seedlings, including the marigolds, into l"*
+- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.4000 (2/5)**, MRR = **1.0000 (Rank 1)**.
+- **Budget Compliance:** Storage: 474 / 500 tokens; Context: 211 / 256 tokens (5/5 memories in context).
+
+#### Q19 (`c8090214_abs`) — Temporal Reasoning (Abstention)
+- **Query:** *"How many days before I bought my iPad did I attend the Holiday Market?"*
+- **Expected Answer:** *"The information provided is not enough. You mentioned getting the iPhone 13 Pro and attending the market, but you did not mention buying an iPad."*
+- **Final Top 5:**
+  - **Rank 1:** `0.5187` (rel 0.3939) — *"By the way, I attended the annual Holiday Market at the local mall a week b"* (**EV 0 Hit**)
+  - **Rank 2:** `0.4904` (rel 0.2278) — *"I've actually been to the Governors Ball Music Festival before, it was amaz"*
+  - **Rank 3:** `0.4890` (rel 0.2254) — *"I'm thinking of buying a new camera to capture some amazing shots at the fe"*
+  - **Rank 4:** `0.4524` (rel 0.2433) — *"I think I'll go back to the Holiday Market and take a closer look at the je"*
+  - **Rank 5:** `0.4519` (rel 0.2424) — *"Do you have any favorite pieces in mind from the Holiday Market, or are you"*
+- **Metrics:** Recall@5 = **0.5000 (1/2)**, Precision@5 = **0.2000 (1/5)**, MRR = **1.0000 (Rank 1)**.
+- **Budget Compliance:** Storage: 484 / 500 tokens; Context: 200 / 256 tokens (5/5 memories in context).
+
+#### Q20 (`gpt4_483dd43c`) — Temporal Reasoning
+- **Query:** *"Which show did I start watching first, 'The Crown' or 'Game of Thrones'?"*
+- **Expected Answer:** *"'Game of Thrones'"*
+- **Supporting Evidence:**
+  1. EV 0: Session 20 Turn 1 (*"The Crown"*)
+  2. EV 1: Session 40 Turn 1 (*"Game of Thrones"*)
+- **Baseline vs Final Top 5:**
+  - *Baseline:* Rank 1 (Mrs. Maisel distractor +0.25 boost), Rank 2 (fantasy shows), Rank 3 (epic storytelling), Rank 4 (action drama), Rank 5 (Game of Thrones [EV 1 hit]), Rank 6 (The Crown [EV 0 missed]). Recall@5 = 0.5000.
+  - *Final:*
+    - **Rank 1:** `0.5729` (rel 0.3778) — *"Do you think you can recommend some fantasy shows similar to 'Game of Thron"*
+    - **Rank 2:** `0.5511` (rel 0.4528) — *"These shows offer a mix of epic storytelling, complex characters, and fanta"*
+    - **Rank 3:** `0.5222` (rel 0.3703) — *"All of these shows offer a mix of action, drama, and fantasy elements that"*
+    - **Rank 4:** `0.5210` (rel 0.3681) — *"I've been meaning to check out 'Game of Thrones' for a while, and I finally"* (**EV 1 Hit**)
+    - **Rank 5:** `0.5201` (rel 0.3809) — *"I just finished binge-watching the third season of 'The Crown' on Netflix,"* (**EV 0 Hit**)
+- **Metrics:** Recall@5 = **1.0000 (2/2)**, Precision@5 = **0.4000 (2/5)**, MRR = **0.2500 (Rank 4)**.
+- **Budget Compliance:** Storage: 481 / 500 tokens; Context: 207 / 256 tokens (5/5 memories in context).
+
+---
+
+### 9.5 Comparative Before/After Results (Batch 4)
+
+| Question ID | Category | Baseline Recall@5 | Final Recall@5 | Baseline Prec@5 | Final Prec@5 | Baseline MRR | Final MRR | Status |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `2a1811e2` (Q16) | temporal-reasoning | 0.5000 (1/2) | **1.0000 (2/2)** | 0.2000 (1/5) | **0.4000 (2/5)** | 0.2500 (R4) | **0.5000 (R2)** | **+0.5000** (Event bridge) |
+| `gpt4_fa19884c` (Q17) | temporal-reasoning | 1.0000 (2/2) | **1.0000 (2/2)** | 0.6000 (3/5) | **0.6000 (3/5)** | 1.0000 (R1) | **1.0000 (R1)** | Preserved |
+| `gpt4_385a5000` (Q18) | temporal-reasoning | 1.0000 (2/2) | **1.0000 (2/2)** | 0.4000 (2/5) | **0.4000 (2/5)** | 1.0000 (R1) | **1.0000 (R1)** | Preserved |
+| `c8090214_abs` (Q19) | temporal-reasoning | 0.5000 (1/2) | **0.5000 (1/2)** | 0.2000 (1/5) | **0.2000 (1/5)** | 1.0000 (R1) | **1.0000 (R1)** | Grounded (Abstention) |
+| `gpt4_483dd43c` (Q20) | temporal-reasoning | 0.5000 (1/2) | **1.0000 (2/2)** | 0.2000 (1/5) | **0.4000 (2/5)** | 0.2000 (R5) | **0.2500 (R4)** | **+0.5000** (Anchored boost) |
+| **Batch 4 Mean** | | **0.7000 (70.0%)** | **0.9000 (90.0%)** | **0.3200 (32.0%)** | **0.4000 (40.0%)** | **0.6900** | **0.7500** | **+20.0% Recall** |
+
+---
+
+### 9.6 Full Regression Audit: Zero Regressions across Q1–Q15
+
+All 15 prior benchmark questions were re-executed under identical runtime conditions to guarantee complete stability.
+
+| Question ID | Category | Baseline / Audited Recall@5 | Post-Batch 4 Recall@5 | Prec@5 | MRR | Delta |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|
+| `94f70d80` (Q1) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
+| `bc8a6e93_abs` (Q2)| single-session-user | NaN | NaN | NaN | NaN | 0.0000 |
+| `6ade9755` (Q3) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 0.5000 | 0.0000 |
+| `bc8a6e93` (Q4) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
+| `6f9b354f` (Q5) | single-session-user | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
+| `bc149d6b` (Q6) | multi-session | 0.5000 | 0.5000 | 0.2000 | 0.2000 | 0.0000 |
+| `5a7937c8` (Q7) | multi-session | 1.0000 | 1.0000 | 0.6000 | 1.0000 | 0.0000 |
+| `gpt4_59c863d7` (Q8)| multi-session | 0.4000 | 0.4000 | 0.4000 | 1.0000 | 0.0000 |
+| `d682f1a2` (Q9) | multi-session | 0.6667 | 0.6667 | 0.4000 | 1.0000 | 0.0000 |
+| `8979f9ec` (Q10)| multi-session | 0.5000 | 0.5000 | 0.4000 | 1.0000 | 0.0000 |
+| `fca70973` (Q11)| single-session-pref | 1.0000 | 1.0000 | 0.4000 | 1.0000 | 0.0000 |
+| `505af2f5` (Q12)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.2000 | 0.0000 |
+| `75832dbd` (Q13)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 1.0000 | 0.0000 |
+| `1c0ddc50` (Q14)| single-session-pref | 0.5000 | 0.5000 | 0.2000 | 0.5000 | 0.0000 |
+| `b6025781` (Q15)| single-session-pref | 1.0000 | 1.0000 | 0.2000 | 0.5000 | 0.0000 |
+
+---
+
+### 9.7 Cumulative Cohort Statistics (Q1–Q20)
+
+| Cohort | N (Evaluable) | Mean Recall@5 | Mean Precision@5 | Mean MRR | Mean Storage Tokens | Context Compliance |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Batch 1 (Q1–Q5)** | 4 | **1.0000 (100.0%)** | 0.2000 (20.0%) | 0.8750 | 487.2 / 500 | 100% ($\le 256$) |
+| **Batch 2 (Q6–Q10)** | 5 | **0.6133 (61.3%)** | 0.4000 (40.0%) | 0.8400 | 485.6 / 500 | 100% ($\le 256$) |
+| **Batch 3 (Q11–Q15)** | 5 | **0.9000 (90.0%)** | 0.2400 (24.0%) | 0.6400 | 488.4 / 500 | 100% ($\le 256$) |
+| **Batch 4 (Q16–Q20)** | 5 | **0.9000 (90.0%)** | 0.4000 (40.0%) | 0.7500 | 479.0 / 500 | 100% ($\le 256$) |
+| **Overall Q1–Q20** | **19** | **0.8456 (84.6%)** | **0.3158 (31.6%)** | **0.7711** | **484.9 / 500** | **100% ($\le 256$)** |
+
+---
+
+### 9.8 Test Suite Status & Remaining Limitations
+- **Full Test Suite:** `python -m pytest --ignore=scratch`
+  - Result: **119 passed in 2.48s** (0 failures, 0 errors).
+- **Added Regression Tests:**
+  1. `test_cultural_festival_celebration_bridging`: Verified festival/celebration match vs unrelated celebration.
+  2. `test_domain_bridging_no_regression`: Verified no regressions in faith, academic, or recipe domain bridging.
+  3. `test_relevance_anchored_historical_boost`: Verified relevant predecessor receives boost while low-relevance superseded distractor does not.
+  4. `test_current_query_excludes_superseded_memory`: Verified current queries strictly exclude superseded facts.
+- **Remaining Limitations:**
+  1. In complex compound temporal questions (e.g. Q16), assistant turns that rephrase user facts may score high relevance due to repetition. While both dates were present in context, ensuring user-attributed propositions consistently outrank assistant re-summaries remains an active area for candidate attribution ranking.
+  2. Cross-clause temporal dependencies across disjoint sessions (as observed in Q14 and Q19) remain bounded by proposition extraction atomicity.
