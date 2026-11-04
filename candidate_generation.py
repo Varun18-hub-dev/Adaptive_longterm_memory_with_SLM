@@ -190,24 +190,53 @@ class BaseCandidateExtractor(ABC):
 
 _ASSISTANT_STOP_CAPS = {
     "A", "An", "The", "This", "That", "These", "Those", "There", "Here", "Some", "Many", "All", "Each", "Every",
-    "In", "On", "At", "For", "To", "With", "By", "From", "As", "It", "They", "We", "You", "He", "She",
+    "In", "On", "At", "For", "To", "With", "By", "From", "As", "It", "They", "We", "You", "He", "She", "I",
     "My", "Your", "His", "Her", "Its", "Our", "Their", "What", "Which", "Who", "Whom", "Whose",
     "One", "Two", "Three", "First", "Second", "Third", "Another", "Other", "However", "Moreover",
     "Furthermore", "Therefore", "Additionally", "Yes", "No", "Please", "Sure"
 }
 
+_ARTICLE_PRONOUN_STARTERS = {
+    "a", "an", "the", "this", "that", "these", "those",
+    "my", "your", "his", "her", "its", "our", "their",
+    "some", "any", "each", "every", "all", "both", "few", "many", "much"
+}
+
 def _has_concrete_named_entity(text: str) -> bool:
+    # 1. Acronyms / model identifiers / uppercase codes (SIAC_GEE, 6S, OTP, Sen2Cor, GEE, etc.)
     acronym_pattern = r"\b(?:[A-Z0-9_]*[A-Z][0-9]|[0-9][A-Z]|[A-Z]{2,}|[A-Z][a-z]+[A-Z][A-Za-z0-9_]*)\b"
     if re.search(acronym_pattern, text):
         return True
+
+    # 2. Multi-word capitalized proper names (Grilled Snapper, Mango Salsa, Southwest Airlines)
+    # Both words must be genuine content words; neither may be a grammatical function word
     for m in re.finditer(r"\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b", text):
         w1, w2 = m.group(1), m.group(2)
-        if w1 not in _ASSISTANT_STOP_CAPS or w2 not in _ASSISTANT_STOP_CAPS:
+        if w1 not in _ASSISTANT_STOP_CAPS and w2 not in _ASSISTANT_STOP_CAPS:
             return True
-    words = re.findall(r"\b[A-Z][a-z]+\b", text)
-    for w in words:
+
+    # 3. Capitalized words appearing mid-sentence that do not follow an article or pronoun
+    # e.g., "We recommend Patagonia because...", "Ackee and Saltfish..."
+    # Words following an article/pronoun (e.g. "an Effective", "the Biggest") are ordinary noun phrases
+    mid_sentence_pattern = r"(?<=[a-z0-9,;:\(\[\{\-\']\s)([A-Z][a-z]+)\b"
+    for m in re.finditer(mid_sentence_pattern, text):
+        w = m.group(1)
         if w not in _ASSISTANT_STOP_CAPS:
+            preceding_match = re.search(r"\b([a-zA-Z]+)\s+" + re.escape(w) + r"\b", text)
+            if preceding_match:
+                prev_w = preceding_match.group(1).lower()
+                if prev_w in _ARTICLE_PRONOUN_STARTERS:
+                    continue
             return True
+
+    # 4. Genuine proper noun at the very start of the sentence (e.g., "Patagonia is known...")
+    # Must not be a stop-capital word, and must be at least 2 characters long
+    words = re.findall(r"\b[A-Za-z]+\b", text)
+    if words:
+        first_w = words[0]
+        if first_w[0].isupper() and first_w not in _ASSISTANT_STOP_CAPS and len(first_w) >= 2:
+            return True
+
     return False
 
 class HeuristicCandidateExtractor(BaseCandidateExtractor):

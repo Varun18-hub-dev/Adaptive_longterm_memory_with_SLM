@@ -1744,21 +1744,40 @@ Batch 6 evaluates five questions belonging to the `single-session-assistant` cat
 ### 3. Named-Entity Filter & False-Positive Audit
 
 #### Audit Findings on `_has_concrete_named_entity()`
-A focused audit of `_has_concrete_named_entity()` tested both negative (generic advice) and positive (concrete factual) assistant sentences:
+A focused audit of `_has_concrete_named_entity()` resolved a structural logic flaw where two-word capitalized phrases previously used an `or` condition (`w1 not in stop_caps or w2 not in stop_caps`), which allowed grammatical function words (`An`, `The`, `Some`, `This`, `Your`) followed by an ordinary capitalized word (e.g. title-casing) to be falsely recognized as named entities.
 
-1. **Negative Test Cases (Expected Rejection — Generic Advice):**
-   - `I recommend exercising regularly because it improves health.` -> Rejected (`got=0`, PASS)
-   - `A healthy diet includes vegetables and whole grains.` -> Rejected (`got=0`, PASS)
-   - `An effective security strategy uses strong passwords and regular updates.` -> Initially admitted due to sentence-initial `"An"`; resolved after expanding `_ASSISTANT_STOP_CAPS` (`got=0`, PASS)
-   - `My suggestion is to get enough sleep and drink water.` -> Initially admitted due to sentence-initial `"My"`; resolved after expanding `_ASSISTANT_STOP_CAPS` (`got=0`, PASS)
-   - `I suggest maintaining a consistent study schedule.` -> Rejected (`got=0`, PASS)
+The logic was hardened with four generalizable criteria:
+1. **Acronyms & Model Identifiers:** Uppercase acronyms and codes (`SIAC_GEE`, `6S`, `OTP`, `Sen2Cor`, `GEE`) are always recognized as concrete entities.
+2. **Multi-Word Capitalized Proper Names:** Two capitalized words qualify only if **both** words are content words (`w1 not in stop_caps and w2 not in stop_caps`), preventing function words from qualifying noun phrases (e.g. `An Effective`, `The Biggest`, `Your Daily`).
+3. **Mid-Sentence Capitalization:** Mid-sentence capitalized words qualify only if they do not immediately follow an article, determiner, or pronoun (`a`, `an`, `the`, `this`, `that`, `my`, `your`, `some`, etc.).
+4. **Sentence-Initial Proper Nouns:** A word at the very start of a sentence qualifies only if it is a bona fide proper noun not in `_ASSISTANT_STOP_CAPS` (which includes standard English articles, pronouns, determiners, prepositions, conjunctions, and discourse markers) and has length $\ge 2$.
 
-2. **Positive Test Cases (Expected Admission — Concrete Information):**
-   - `Patagonia is known for its sustainable supply chain.` -> Admitted (`got=1`, PASS)
-   - `SIAC_GEE uses the 6S radiative transfer model.` -> Admitted (`got=1`, PASS)
-   - `Grilled Snapper with Mango Salsa is topped with fruit salsa.` -> Admitted (`got=1`, PASS)
-   - `Two-factor authentication includes biometric authentication or OTP.` -> Admitted (`got=1`, PASS)
-   - `Southwest Airlines offers employee safety training.` -> Admitted (`got=1`, PASS)
+#### Execution Output on Negative Test Cases (Must be Rejected)
+| Sentence | NE Filter | Informative Predicate | Admissible | Status |
+|:---|:---:|:---:|:---:|:---:|
+| `I recommend exercising regularly because it improves health.` | `False` | `True` | `False` | **PASS** |
+| `A healthy diet includes vegetables and whole grains.` | `False` | `True` | `False` | **PASS** |
+| `An effective security strategy uses strong passwords and regular updates.` | `False` | `True` | `False` | **PASS** |
+| `My suggestion is to get enough sleep and drink water.` | `False` | `False` | `False` | **PASS** |
+| `I suggest maintaining a consistent study schedule.` | `False` | `True` | `False` | **PASS** |
+| `The biggest threats to giraffe populations are human-related activities such as habitat destruction.` | `False` | `True` | `False` | **PASS** |
+| `Your daily routine includes drinking enough water.` | `False` | `True` | `False` | **PASS** |
+| `This effective approach uses regular backups.` | `False` | `True` | `False` | **PASS** |
+| `Some healthy habits include getting adequate sleep.` | `False` | `True` | `False` | **PASS** |
+| `An Effective security strategy uses strong passwords and regular updates.` | `False` | `True` | `False` | **PASS** |
+| `The Biggest threats to giraffe populations are human-related activities such as habitat destruction.` | `False` | `True` | `False` | **PASS** |
+| `Your Daily routine includes drinking enough water.` | `False` | `True` | `False` | **PASS** |
+| `This Effective approach uses regular backups.` | `False` | `True` | `False` | **PASS** |
+| `Some Healthy habits include getting adequate sleep.` | `False` | `True` | `False` | **PASS** |
+
+#### Execution Output on Positive Test Cases (Must be Admitted)
+| Sentence | NE Filter | Informative Predicate | Admissible | Status |
+|:---|:---:|:---:|:---:|:---:|
+| `Patagonia is known for its sustainable supply chain.` | `True` | `True` | `True` | **PASS** |
+| `SIAC_GEE uses the 6S radiative transfer model.` | `True` | `True` | `True` | **PASS** |
+| `Grilled Snapper with Mango Salsa is topped with fruit salsa.` | `True` | `True` | `True` | **PASS** |
+| `Two-factor authentication includes biometric authentication or OTP.` | `True` | `True` | `True` | **PASS** |
+| `Southwest Airlines offers employee safety training.` | `True` | `True` | `True` | **PASS** |
 
 #### Q7 False-Positive Protection Audit
 To verify that generic assistant propositions do not displace target user evidence (as previously occurred with giraffe-threat propositions), Session 16 of Question 7 (`5a7937c8`) was evaluated through the full extraction and retrieval pipeline:
@@ -1842,5 +1861,5 @@ Across the first 30 questions of the LongMemEval development benchmark (28 evalu
 | **Batch 4 (Q16–Q20)** | Temporal reasoning | 5 | **0.9000 (90.0%)** | 0.4000 (40.0%) | 0.4000 (40.0%) | 0.7500 | 479.0 / 500 | 100% ($\le 256$) |
 | **Batch 5 (Q21–Q25)** | Knowledge update | 4 *(Q21 NaN)* | **1.0000 (100.0%)** | 0.5250 (52.5%) | 0.5000 (50.0%) | **1.0000** | 478.5 / 500 | 100% ($\le 256$) |
 | **Batch 6 (Q26–Q30)** | Single-session assistant | 5 | **1.0000 (100.0%)** | 0.3500 (35.0%) | 0.2800 (28.0%) | 0.4333 | 485.2 / 500 | 100% ($\le 256$) |
-| **Cumulative Q1–Q30** | **All 30 benchmark questions** | **28** | **0.8952 (89.52%)** | **0.3518 (35.18%)** | **0.3357 (33.57%)** | **0.7435** | **484.1 / 500 (Evaluable)**<br>**484.9 / 500 (All 30)** | **100% ($\le 256$)** |
+| **Cumulative Q1–Q30** | **All 30 benchmark questions** | **28** | **0.8952 (89.52%)** | **0.3518 (35.18%)** | **0.3357 (33.57%)** | **0.7435** | **484.0 / 500 (13,553 / 28 Evaluable)**<br>**484.9 / 500 (14,547 / 30 Cohort)** | **100% ($\le 256$)** |
 

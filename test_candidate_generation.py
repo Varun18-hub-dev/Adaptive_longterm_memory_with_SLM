@@ -225,6 +225,46 @@ class TestCandidateGenerationCases(unittest.TestCase):
         )
         self.assertFalse(
             HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Your daily routine includes drinking enough water."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "This effective approach uses regular backups."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Some healthy habits include getting adequate sleep."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "An Effective security strategy uses strong passwords and regular updates."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "The Biggest threats to giraffe populations are human-related activities such as habitat destruction."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Your Daily routine includes drinking enough water."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "This Effective approach uses regular backups."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
+                "Some Healthy habits include getting adequate sleep."
+            )
+        )
+        self.assertFalse(
+            HeuristicCandidateExtractor._is_admissible_assistant_turn(
                 "Let me know if you need any more recommendations."
             )
         )
